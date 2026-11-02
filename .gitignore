@@ -20,6 +20,7 @@ Thumbs.db
 .vscode/
 *.code-workspace
 AGENTS.md
+TODO.md
 .agents/
 
 # Build artifacts
