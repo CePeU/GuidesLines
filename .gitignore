@@ -19,6 +19,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.code-workspace
+AGENTS.md
+.agents/
 
 # Build artifacts
 *.o
