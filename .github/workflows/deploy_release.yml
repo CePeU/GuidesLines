@@ -32,7 +32,7 @@ jobs:
     - name: Zip Release
       run: |
         mkdir -p /tmp/release/GuidesLines
-        rsync -a --exclude='.git' --exclude='.github' --exclude='.gitignore' --exclude='.gitmodules' . /tmp/release/GuidesLines/
+        rsync -a --exclude='.git' --exclude='.github' --exclude='.gitignore' --exclude='.gitmodules' --exclude='tests/' . /tmp/release/GuidesLines/
         cd /tmp/release
         zip -r $GITHUB_WORKSPACE/GuidesLines.zip GuidesLines
     - name: Deploy Release

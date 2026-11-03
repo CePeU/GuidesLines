@@ -1,0 +1,9 @@
+{
+  "dirs": ["res://unit"],
+  "include_subdirs": false,
+  "should_exit": true,
+  "disable_colors": true,
+  "font_name": "Default",
+  "post_run_script": "res://strict_results.gd",
+  "junit_xml_file": "res://results/junit.xml"
+}

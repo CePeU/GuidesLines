@@ -35,3 +35,11 @@ TODO.md
 # Dependencies (except submodules)
 dependencies/*
 !dependencies/_Lib/
+
+# Generated test dependencies and results (never part of the runtime mod).
+tests/addons/
+tests/.cache/
+tests/results/
+tests/*.log
+tests/logs/
+tests/__pycache__/

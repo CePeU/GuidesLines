@@ -1,0 +1,27 @@
+{
+  "roots": ["scripts"],
+  "root_scripts": true,
+  "injected_globals": ["GuidesLines.gd"],
+  "entry_contract": {"GuidesLines.gd": "tool"},
+  "manifest": "GuidesLines.ddmod",
+  "required_resources": ["icons/guides_lines_icon.png", "icons/normal64.png", "icons/merge64.png", "icons/conforming64.png", "icons/wrapping64.png", "icons/difference64.png", "icons/cut64.png"],
+  "load_only": {
+    "scripts/tool/GuidesLinesTool.gd": "Constructor owns mutually referencing collaborators; a dedicated isolated construction and cleanup test is needed."
+  },
+  "construct": [
+    {"path": "GuidesLines.gd", "args": []},
+    {"path": "scripts/utils/GeometryUtils.gd", "args": []},
+    {"path": "scripts/render/GuidesLinesRender.gd", "args": []},
+    {"path": "scripts/guides/GuideMarker.gd", "args": []},
+    {"path": "scripts/guides/FillMarker.gd", "args": []},
+    {"path": "scripts/overlays/CrossOverlay.gd", "args": []},
+    {"path": "scripts/overlays/PermanentOverlay.gd", "args": []},
+    {"path": "scripts/overlays/MarkerOverlay.gd", "args": []},
+    {"path": "scripts/api/guides_lines_api.gd", "args": [null, null]},
+    {"path": "scripts/tool/GuidesLinesToolUI.gd", "args": [null]},
+    {"path": "scripts/tool/GuidesLinesPlacement.gd", "args": [null]},
+    {"path": "scripts/tool/GuidesLinesFill.gd", "args": [null]},
+    {"path": "scripts/tool/GuidesLinesHistory.gd", "args": []}
+  ],
+  "construction_note": "Constructors only, off-tree; null collaborators intentionally never receive lifecycle calls. Lifecycle methods, UI and nested history records are outside this constructor check."
+}
