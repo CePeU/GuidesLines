@@ -59,7 +59,6 @@ func finalize_path_marker(closed):
 		"position": tool.path_temp_points[0],  # First point is marker position
 		"marker_type": tool.MARKER_TYPE_PATH,
 		"color": tool.active_color,
-		"coordinates": tool.show_coordinates,
 		"id": tool.next_id,
 		"marker_points": tool.path_temp_points.duplicate(),
 		"path_closed": closed,

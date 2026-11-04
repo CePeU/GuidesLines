@@ -52,6 +52,45 @@ func test_shape_preserves_modified_primitives_until_clear_clip():
 	assert_eq(marker.get_draw_data(rect, Vector2(10, 10)).primitives.size(), 4)
 
 
+func test_position_property_translates_authoritative_geometry_and_invalidates_polygon():
+	var script = load(mod_root.plus_file("scripts/guides/GuideMarker.gd"))
+	var marker = script.new(Vector2(10, 20))
+	marker.marker_type = "Shape"
+	var segments = [{"type": "seg", "a": Vector2(1, 2), "b": Vector2(3, 4)}]
+	marker.set_primitives(segments)
+	marker.get_polygon()
+	marker.set_property("position", Vector2(15, 30))
+	assert_eq(marker.position, Vector2(15, 30))
+	assert_eq(marker.get_primitives()[0].a, Vector2(6, 12))
+	assert_eq(marker.get_primitives()[0].b, Vector2(8, 14))
+	assert_eq(segments[0].a, Vector2(1, 2), "Do not mutate shared snapshot data")
+	assert_false(marker.cached_draw_data.has("polygon"))
+	assert_eq(marker.get_draw_data(null, Vector2(10, 10)).primitives[0].a, Vector2(6, 12))
+	assert_eq(marker.get_polygon()[0], Vector2(6, 12))
+	marker.set_primitives([])
+	marker.set_property("position", Vector2.ZERO)
+	assert_eq(marker.get_draw_data(null, Vector2(10, 10)).primitives, [])
+	marker.clear_clip()
+	marker.set_property("position", Vector2(100, 200))
+	var fresh = marker.get_draw_data(null, Vector2(10, 10)).primitives
+	assert_almost_eq(fresh[0].a.distance_to(marker.position), 10.0, 0.001)
+	marker.marker_type = "Path"
+	marker.marker_points = [Vector2(1, 2), Vector2(3, 4)]
+	marker.set_property("position", Vector2(105, 210))
+	assert_eq_deep(marker.marker_points, [Vector2(6, 12), Vector2(8, 14)])
+	marker.set_property("position", Vector2(105, 210))
+	assert_eq(marker.marker_points[0], Vector2(6, 12), "Same position must not move twice")
+
+
+func test_invalid_custom_snap_interval_does_not_loop():
+	var script = load(mod_root.plus_file("scripts/guides/GuideMarker.gd"))
+	var marker = script.new()
+	for interval in [Vector2.ZERO, Vector2(-1, 10), Vector2(10, 0)]:
+		marker.rebuild_coord_cache(Rect2(0, 0, 100, 100), Vector2(10, 10),
+			{"custom_snap_enabled": true, "snap_interval": interval})
+		assert_eq(marker.cached_coord_points, [])
+
+
 func test_malformed_saved_shape_geometry_does_not_replace_existing_state():
 	var script = load(mod_root.plus_file("scripts/guides/GuideMarker.gd"))
 	var marker = script.new(Vector2(10, 20))

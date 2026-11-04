@@ -56,7 +56,7 @@ and recursively under `scripts/`, loads them with Godot and checks
 `can_instance()`. Every discovered file needs exactly one reviewed `construct`
 entry or `load_only` reason. Unclassified new sources fail.
 
-The inventory contains 14 scripts; 13 constructors execute off-tree. Owned Nodes
+The inventory contains 15 scripts; 14 constructors execute off-tree. Owned Nodes
 are freed. `GuidesLinesTool` remains load-only in this generic inventory because
 its constructor creates mutually referencing collaborators. `test_tool_history.gd`
 constructs the real tool and explicitly breaks those cycles after each test.
@@ -77,6 +77,15 @@ and opacity updates. It verifies Line/Shape/Path round trips, JSON preservation 
 modified and explicitly empty Shape outlines, rejection of malformed saved
 primitives without replacing existing state, and reset through `clear_clip()`.
 
+`test_persistence.gd` exercises the real `GuidesLinesPersistence` class with the
+real tool/models/history and an explicit host signal source. It checks full JSON
+round trips for all marker types, fills and templates; exact version rejection
+and complete replacement on the next save; atomic malformed-data rejection;
+integer ID lookup/counter repair; independent save snapshots; native
+`OnSaveBegin(path, is_backup)` handling; late WorldUI, map changes and connection
+cleanup; and delete undo/redo plus template placement after loading. This verifies
+the signal contract in isolation, not Dungeondraft's save UI or disk I/O.
+
 `test_tool_history.gd` exercises original tool/history/API code for delete undo,
 delete-all undo, rotated template redo, conforming redo after UI settings change,
 Cut/Merge metadata restoration, merge deletion signals, distant Shape/Path edges,
@@ -84,8 +93,19 @@ the wrapping result contract, hex side sizing callbacks and tool-state fields.
 Host collaborators are dictionaries; these tests do not validate Dungeondraft's
 HistoryApi, map persistence, rendering or the installed Snappy mod.
 
+`test_aabb.gd` compares clipping and merge outputs against the same source with
+broad-phase additions removed in memory. Cases include separated, tangent,
+contained, degenerate, large-coordinate and near-tolerance shapes. Diagnostic
+64-sided clipping timings compare both implementations without timing-based
+acceptance thresholds. Tool tests also cover UI-independent parameter actions,
+per-type memory, missing-field defaults and actual panel signals.
+
 `test_audit_regressions.gd` checks original entry/tool/UI/API code with real Godot
-controls for setting synchronization, event counts and panel replacement. It also
+controls for setting synchronization, event counts, panel replacement and shared
+icon textures. Canvas gating uses actual Control transforms with a controlled
+pointer at four scales; input tests cover UI wheel/click rejection and drag
+release outside the canvas. These tests do not exercise OS pointer routing in
+Dungeondraft. It also
 covers shared clipping, Shape/Template mode equivalence, polygon-cache transitions,
 snapshot wrappers, epsilon boundaries, nearest vertices, coordinate-axis generation
 and redraw invalidation. `helpers/draw_probe.gd` records original render commands
@@ -136,9 +156,15 @@ test root; Godot clamps `res://..` preload paths. Use independently known
 expectations, numeric tolerances and deep dictionary assertions. Parameterized
 tests or inner classes require updated expected-case discovery in `run.py`.
 
-The suite contains 50 tests / 726 assertions. Two obsolete circle/ray helper tests
+The suite contains 80 tests / 1663 assertions. The latest regressions cover map persistence, partial
+merge failures, restored ID reservation, UI picking at distant outlines before API
+registration, preview lifetime across repeated draws, actual-geometry query bounds
+and their invalidation, clipped Line sampling, canonical placement flags and the
+shared SpinBox rows. Two obsolete circle/ray helper tests
 were retired with their unused implementations; active ray clipping is covered
 by the map/preview checks. Keep generated dependencies and
 reports out of source control and test files out of runtime distribution archives.
+
+Dungeondraft runtime testing was confirmed successful by the user on 2026-11-04.
 
 See [AUDIT.md](AUDIT.md) for the reviewed findings and remaining work.

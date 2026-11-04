@@ -99,6 +99,16 @@ var type_settings = {
 	}
 }
 
+# Saved key -> active property and legacy fallback when a field is absent.
+const TYPE_SETTING_FIELDS = {
+	"Line": {"angle": ["active_angle", 0.0], "mirror": ["active_mirror", false]},
+	"Shape": {"radius": ["active_shape_radius", 1.0], "angle": ["active_shape_angle", 0.0],
+		"sides": ["active_shape_sides", 6], "size_mode": ["active_shape_size_mode", "radius"],
+		"side": ["active_shape_side", 1.0]},
+	"Path": {"end_arrow": ["active_path_end_arrow", false],
+		"head_length": ["active_arrow_head_length", 50.0], "head_angle": ["active_arrow_head_angle", 30.0]}
+}
+
 # Default values
 const DEFAULT_SHAPE_SIDES = 6  # Fallback for missing "sides" key in saved/loaded marker data
 
@@ -127,6 +137,7 @@ var path_preview_point = null  # Current mouse position for line preview
 
 # API-requested one-frame preview (set by GuidesLinesApi.set_shape_preview, auto-cleared after one render)
 var _api_preview = {}
+var _api_preview_frame = -1
 
 
 # Initialize tool with reference to parent mod
@@ -218,12 +229,12 @@ func place_marker(pos):
 		"position": final_pos,
 		"marker_type": active_marker_type,
 		"color": active_color,
-		"coordinates": show_coordinates if active_marker_type == MARKER_TYPE_LINE else false,
 		"id": next_id
 	}
 	
 	# Add type-specific parameters
 	if active_marker_type == MARKER_TYPE_LINE:
+		marker_data["show_coordinates"] = show_coordinates
 		marker_data["angle"] = active_angle
 		marker_data["mirror"] = active_mirror
 	elif active_marker_type == MARKER_TYPE_SHAPE:
@@ -286,7 +297,6 @@ func capture_marker_as_template(pos: Vector2) -> void:
 	var data = {
 		"marker_type":       marker.marker_type,
 		"color":             marker.color,
-		"coordinates":       marker.show_coordinates,
 		"angle":             marker.angle,
 		"mirror":            marker.mirror,
 		"shape_radius":      marker.shape_radius,
@@ -297,6 +307,9 @@ func capture_marker_as_template(pos: Vector2) -> void:
 		"arrow_head_length": marker.arrow_head_length,
 		"arrow_head_angle":  marker.arrow_head_angle,
 	}
+
+	if marker.marker_type == MARKER_TYPE_LINE:
+		data["show_coordinates"] = marker.show_coordinates
 
 	# For Path: store points relative to the first point so the shape is position-independent
 	if marker.marker_type == MARKER_TYPE_PATH and marker.marker_points.size() > 0:
@@ -356,9 +369,7 @@ func adjust_template_rotation_with_wheel(direction: int) -> void:
 		return
 	var tmpl_type = templates[active_template_index]["data"].get("marker_type", "")
 	var step = 1.0 if tmpl_type == MARKER_TYPE_LINE else 5.0
-	template_rotation_offset = fmod(template_rotation_offset + direction * step, 360.0)
-	if template_rotation_offset < 0.0:
-		template_rotation_offset += 360.0
+	template_rotation_offset = fposmod(template_rotation_offset + direction * step, 360.0)
 	if overlay:
 		overlay.update()
 	if LOGGER:
@@ -368,7 +379,7 @@ func adjust_template_rotation_with_wheel(direction: int) -> void:
 func rotate_template_45() -> void:
 	if active_template_index < 0 or active_template_index >= templates.size():
 		return
-	template_rotation_offset = fmod(template_rotation_offset + 45.0, 360.0)
+	template_rotation_offset = fposmod(template_rotation_offset + 45.0, 360.0)
 	if overlay:
 		overlay.update()
 	if LOGGER:
@@ -385,12 +396,9 @@ func _build_shape_descriptor_from_template(pos: Vector2) -> Dictionary:
 		return {}
 	var tmpl_data = templates[active_template_index]["data"]
 	var rot_rad = deg2rad(template_rotation_offset)
-	var tmp = GuideMarkerClass.new()
-	tmp.position    = pos
-	tmp.marker_type = MARKER_TYPE_SHAPE
-	tmp.shape_radius = tmpl_data.get("shape_radius", 1.0)
-	tmp.shape_angle  = fmod(tmpl_data.get("shape_angle", 0.0) + template_rotation_offset, 360.0)
-	tmp.shape_sides  = tmpl_data.get("shape_sides", DEFAULT_SHAPE_SIDES)
+	var data = {"position": pos, "shape_radius": tmpl_data.get("shape_radius", 1.0),
+		"shape_angle": fposmod(tmpl_data.get("shape_angle", 0.0) + template_rotation_offset, 360.0),
+		"shape_sides": tmpl_data.get("shape_sides", DEFAULT_SHAPE_SIDES)}
 	if tmpl_data.has("shape_primitives"):
 		# Inject modified primitives translated + rotated to the new position
 		var abs_prims = []
@@ -400,8 +408,8 @@ func _build_shape_descriptor_from_template(pos: Vector2) -> Dictionary:
 				"a": pos + rel_seg["a"].rotated(rot_rad),
 				"b": pos + rel_seg["b"].rotated(rot_rad),
 			})
-		tmp.set_primitives(abs_prims)
-	return _get_shape_descriptor(tmp, cell_size)
+		data["shape_primitives"] = abs_prims
+	return _get_shape_descriptor_from_marker_data(data)
 
 # Place a new marker using the currently selected template at [pos].
 func _place_template_marker(pos: Vector2) -> void:
@@ -427,21 +435,17 @@ func _place_template_marker(pos: Vector2) -> void:
 		"position":    final_pos,
 		"marker_type": tmpl_data["marker_type"],
 		"color":       tmpl_data["color"],
-		"coordinates": tmpl_data.get("coordinates", false),
 		"id":          next_id,
 	}
 
 	match tmpl_data["marker_type"]:
 		MARKER_TYPE_LINE:
-			var eff_angle = fmod(tmpl_data.get("angle", 0.0) + template_rotation_offset, 360.0)
-			if eff_angle < 0.0:
-				eff_angle += 360.0
+			marker_data["show_coordinates"] = tmpl_data.get("coordinates", tmpl_data.get("show_coordinates", false))
+			var eff_angle = fposmod(tmpl_data.get("angle", 0.0) + template_rotation_offset, 360.0)
 			marker_data["angle"]  = eff_angle
 			marker_data["mirror"] = tmpl_data.get("mirror", false)
 		MARKER_TYPE_SHAPE:
-			var eff_angle = fmod(tmpl_data.get("shape_angle", 0.0) + template_rotation_offset, 360.0)
-			if eff_angle < 0.0:
-				eff_angle += 360.0
+			var eff_angle = fposmod(tmpl_data.get("shape_angle", 0.0) + template_rotation_offset, 360.0)
 			marker_data["shape_radius"] = tmpl_data.get("shape_radius", 1.0)
 			marker_data["shape_angle"]  = eff_angle
 			marker_data["shape_sides"]  = tmpl_data.get("shape_sides",  DEFAULT_SHAPE_SIDES)
@@ -501,15 +505,14 @@ func _get_shape_descriptor_from_marker_data(marker_data: Dictionary) -> Dictiona
 	var cell_size = _get_grid_cell_size()
 	if cell_size == null:
 		return {}
-	var tmp = GuideMarkerClass.new()
-	tmp.position     = marker_data["position"]
-	tmp.marker_type  = MARKER_TYPE_SHAPE
-	tmp.shape_radius = marker_data.get("shape_radius", active_shape_radius)
-	tmp.shape_angle  = marker_data.get("shape_angle", 0.0)
-	tmp.shape_sides  = marker_data.get("shape_sides", DEFAULT_SHAPE_SIDES)
+	var points
 	if marker_data.has("shape_primitives"):
-		tmp.set_primitives(marker_data["shape_primitives"].duplicate(true))
-	return _get_shape_descriptor(tmp, cell_size)
+		points = GeometryUtils.chain_segments_to_polygon(marker_data["shape_primitives"])
+	else:
+		points = GeometryUtils.calculate_polygon_vertices(marker_data["position"],
+			marker_data.get("shape_radius", active_shape_radius) * min(cell_size.x, cell_size.y),
+			marker_data.get("shape_sides", DEFAULT_SHAPE_SIDES), deg2rad(marker_data.get("shape_angle", 0.0)))
+	return {"shape_type": "poly", "points": points} if not points.empty() else {}
 
 ## Bridge: snapshot clip targets using an already-built descriptor instead of
 ## the tool's active shape parameters.  Semantically identical to
@@ -561,12 +564,15 @@ func api_place_shape_conforming(marker_data: Dictionary) -> Dictionary:
 	var new_desc   = _get_shape_descriptor_from_marker_data(marker_data)
 	var clip_snaps = _snapshot_potential_clip_targets_by_desc(new_desc)
 	var prev_conforming = conforming_mode
+	var prev_wrapping = wrapping_mode
 	conforming_mode = true
+	wrapping_mode = false
 	_do_place_marker(marker_data)
 	next_id += 1
 	conforming_mode = prev_conforming
-	_record_history(GuidesLinesHistory.PlaceMarkerConformingRecord.new(
-		self, marker_data, new_desc, clip_snaps))
+	wrapping_mode = prev_wrapping
+	_record_history(GuidesLinesHistory.PlaceMarkerRecord.new(
+		self, marker_data, clip_snaps, true, false))
 	var affected = []
 	for mid in clip_snaps:
 		if not markers_lookup.has(mid):
@@ -609,12 +615,15 @@ func api_place_shape_wrapping(marker_data: Dictionary) -> Dictionary:
 				dented_by_ids.append(m.id)
 				affected.append({"marker_id": m.id, "new_polygon": other_desc.points.duplicate()})
 	var prev_wrapping = wrapping_mode
+	var prev_conforming = conforming_mode
 	wrapping_mode = true
+	conforming_mode = false
 	_do_place_marker(marker_data)
 	next_id += 1
 	wrapping_mode = prev_wrapping
-	_record_history(GuidesLinesHistory.PlaceMarkerWrappingRecord.new(
-		self, marker_data))
+	conforming_mode = prev_conforming
+	_record_history(GuidesLinesHistory.PlaceMarkerRecord.new(
+		self, marker_data, {}, false, true))
 	var final_polygon = []
 	if markers_lookup.has(marker_data["id"]):
 		var placed = markers_lookup[marker_data["id"]]
@@ -711,19 +720,14 @@ func _undo_delete_all(saved_markers):
 
 # Delete marker at specific position (within threshold)
 func delete_marker_at_position(pos, threshold = 20.0):
-	for i in range(markers.size() - 1, -1, -1):  # Iterate backwards for safe removal
-		var marker = markers[i]
-		if marker.position.distance_to(pos) < threshold:
-			# Save marker data before deletion
-			var marker_data = marker.Save()
-			
-			# Execute the action first
-			_do_delete_marker(i)
-			
-			# Then add to history if available
-			_record_history(GuidesLinesHistory.DeleteMarkerRecord.new(self, marker_data, i))
-			return true  # Marker was deleted
-	return false  # No marker found
+	var marker = find_marker_at(pos, threshold)
+	if marker == null:
+		return false
+	var index = markers.find(marker)
+	var marker_data = marker.Save()
+	_do_delete_marker(index)
+	_record_history(GuidesLinesHistory.DeleteMarkerRecord.new(self, marker_data, index))
+	return true
 
 func _do_delete_marker(index):
 	if index < markers.size():
@@ -763,7 +767,7 @@ func _do_place_marker(marker_data):
 	marker.set_property("marker_type", marker_data["marker_type"])
 	marker.color = marker_data["color"]
 	marker.update_opacity(_current_opacity())
-	marker.set_property("show_coordinates", marker_data["coordinates"])
+	marker.set_property("show_coordinates", marker_data.get("coordinates", marker_data.get("show_coordinates", false)))
 	
 	# Load type-specific parameters
 	if marker_data["marker_type"] == MARKER_TYPE_LINE:
@@ -847,9 +851,7 @@ func set_delete_mode(enabled):
 	delete_mode = enabled
 	# Delete mode and Fill type are mutually exclusive — reset dropdown to Line.
 	if enabled and active_marker_type == MARKER_TYPE_FILL:
-		active_marker_type = MARKER_TYPE_LINE
-		if ui:
-			ui.sync_type_selector_to_active_type()
+		set_marker_type(MARKER_TYPE_LINE)
 	# Delete mode and Move mode are mutually exclusive.
 	if enabled and move_mode:
 		move_mode = false
@@ -867,6 +869,9 @@ func set_delete_mode(enabled):
 func set_move_mode(enabled: bool):
 	move_mode = enabled
 	_move_selected_marker = null
+	# Fill regions are not draggable; return to the marker tool as Delete mode does.
+	if enabled and active_marker_type == MARKER_TYPE_FILL:
+		set_marker_type(MARKER_TYPE_LINE)
 	# Move mode and Delete mode are mutually exclusive.
 	if enabled and delete_mode:
 		delete_mode = false
@@ -879,12 +884,69 @@ func set_move_mode(enabled: bool):
 	if overlay:
 		overlay.update()
 
-# Find the first marker whose centre is within [threshold] pixels of [pos].
+# Use the same anchor/outline candidates and tie order as the public query.
 func find_marker_at(pos: Vector2, threshold: float = 20.0):
+	var hit = find_nearest_geometry(pos, threshold, true)
+	return hit.marker if hit != null else null
+
+func find_nearest_geometry(coords: Vector2, radius: float, include_anchor: bool):
+	var map_rect = cached_world.WorldRect if cached_world != null else null
+	var cell_size = _get_grid_cell_size() if cached_world != null else null
+
+	var nearest_marker = null
+	var nearest_dist = radius
+	var nearest_point = null   # actual closest Vector2 on the geometry
+
 	for marker in markers:
-		if marker.position.distance_to(pos) < threshold:
-			return marker
-	return null
+		# Only the marker query includes the anchor as a candidate.
+		var min_dist = marker.position.distance_to(coords) if include_anchor else INF
+		var min_point = marker.position
+		if marker.marker_type in [MARKER_TYPE_SHAPE, MARKER_TYPE_PATH]:
+			var bounds = marker.get_geometry_bounds(map_rect, cell_size)
+			# Inclusive borders preserve zero-radius queries and equally near edges.
+			if min_dist > nearest_dist and (bounds == null or not bounds.grow(nearest_dist).intersects(Rect2(coords, Vector2.ZERO), true)):
+				continue
+
+		match marker.marker_type:
+			"Line":
+				var draw_data = marker.get_draw_data(map_rect, cell_size)
+				if draw_data.has("segments"):
+					for seg in draw_data["segments"]:
+						var pt = GeometryUtils.closest_point_on_segment(coords, seg[0], seg[1])
+						var d = coords.distance_to(pt)
+						if d < min_dist or (not include_anchor and d == min_dist):
+							min_dist = d
+							min_point = pt
+
+			"Shape":
+				var draw_data = marker.get_draw_data(map_rect, cell_size)
+				if draw_data.has("primitives"):
+					for prim in draw_data["primitives"]:
+						if prim.type == "seg":
+							var pt = GeometryUtils.closest_point_on_segment(coords, prim.a, prim.b)
+							var d = coords.distance_to(pt)
+							if d < min_dist or (not include_anchor and d == min_dist):
+								min_dist = d
+								min_point = pt
+
+			"Path":
+				var pts = marker.marker_points
+				if pts.size() >= 2:
+					var pt = GeometryUtils.closest_point_on_polygon_edges(coords, pts, marker.path_closed)
+					var d = coords.distance_to(pt)
+					if d < min_dist or (not include_anchor and d == min_dist):
+						min_dist = d
+						min_point = pt
+
+		if min_dist < INF and min_dist <= nearest_dist:
+			nearest_dist = min_dist
+			nearest_point = min_point
+			nearest_marker = marker
+
+	if nearest_marker == null:
+		return null
+	return {"marker": nearest_marker, "point": nearest_point, "distance": nearest_dist}
+
 
 # Move [marker] to [new_pos] and record the action in history.
 func move_marker(marker, new_pos: Vector2):
@@ -894,25 +956,7 @@ func move_marker(marker, new_pos: Vector2):
 
 # Low-level move — called by move_marker() and by undo/redo.
 func _do_move_marker(marker, new_pos: Vector2):
-	var delta = new_pos - marker.position
-
-	if marker.marker_type == MARKER_TYPE_SHAPE:
-		# Ensure fresh geometry exists, then translate the world-space segments.
-		marker.get_draw_data(null, _get_grid_cell_size())
-		var primitives = marker.get_primitives()
-		for seg in primitives:
-			seg.a += delta
-			seg.b += delta
-		marker.set_primitives(primitives)
-
-	elif marker.marker_type == MARKER_TYPE_PATH:
-		# All path points are absolute world-space positions — translate each one.
-		for i in range(marker.marker_points.size()):
-			marker.marker_points[i] += delta
-
-	marker.position = new_pos
-	marker._dirty = true
-	marker._coord_dirty = true
+	marker.set_property("position", new_pos)
 	if overlay:
 		overlay.update()
 
@@ -1110,19 +1154,18 @@ func _build_shape_descriptor_at(pos: Vector2) -> Dictionary:
 	var cell_size = _get_grid_cell_size()
 	if cell_size == null:
 		return {}
-	var tmp = GuideMarkerClass.new()
-	tmp.position         = pos
-	tmp.marker_type      = MARKER_TYPE_SHAPE
-	tmp.shape_radius     = active_shape_radius
-	tmp.shape_angle      = active_shape_angle
-	tmp.shape_sides      = active_shape_sides
-	return _get_shape_descriptor(tmp, cell_size)
+	return _get_shape_descriptor_from_marker_data({"position": pos,
+		"shape_radius": active_shape_radius, "shape_angle": active_shape_angle,
+		"shape_sides": active_shape_sides})
 
 # Return true if the outlines of two shape descriptors actually intersect.
 func _shapes_intersect(desc_a: Dictionary, desc_b: Dictionary) -> bool:
 	if desc_a.empty() or desc_b.empty():
 		return false
 	if desc_a.shape_type == "poly" and desc_b.shape_type == "poly":
+		if not GeometryUtils.polygon_intersection_bounds(desc_a.points).intersects(
+				GeometryUtils.polygon_intersection_bounds(desc_b.points), true):
+			return false
 		var n = desc_a.points.size()
 		var m = desc_b.points.size()
 		for i in range(n):
@@ -1268,6 +1311,7 @@ func _do_apply_merge(merge_desc: Dictionary, new_pos: Vector2) -> Array:
 	# Weighted-average centre: start from the virtual shape's centre.
 	var center_sum: Vector2 = new_pos
 	var center_count: int = 1
+	var merged_markers = []
 
 	for marker in overlapping:
 		var desc = _get_shape_descriptor(marker, cell_size)
@@ -1285,12 +1329,13 @@ func _do_apply_merge(merge_desc: Dictionary, new_pos: Vector2) -> Array:
 		# Merge succeeded — accumulate centroid only now.
 		center_sum += marker.position
 		center_count += 1
+		merged_markers.append(marker)
 		running_pts = chained
 
 	# ── 2.5. Validate the merged polygon ──────────────────────────────────────
 	# If merging produced a degenerate polygon (e.g., two identical shapes),
 	# keep the original primary marker's geometry unchanged.
-	if running_pts.size() < 3:
+	if merged_markers.empty() or running_pts.size() < 3:
 		if LOGGER:
 			LOGGER.warn("Merge: resulted in degenerate polygon (< 3 vertices) — keeping primary marker %d unchanged" % [overlapping[0].id])
 		return []
@@ -1299,16 +1344,16 @@ func _do_apply_merge(merge_desc: Dictionary, new_pos: Vector2) -> Array:
 	var final_segs = GeometryUtils.points_to_segs(running_pts)
 	var final_pos  = center_sum / float(center_count)
 
-	var primary = overlapping[0]
+	var primary = merged_markers[0]
 	primary.set_primitives(final_segs)
 	primary.position = final_pos
 	if LOGGER:
 		LOGGER.debug("Merge: primary marker %d updated, pos %s" % [primary.id, str(final_pos)])
 
-	# ── 4. Remove all other overlapping markers ───────────────────────────────
+	# Remove only markers whose geometry was successfully included.
 	var absorbed_ids: Array = []
-	for i in range(1, overlapping.size()):
-		var m = overlapping[i]
+	for i in range(1, merged_markers.size()):
+		var m = merged_markers[i]
 		absorbed_ids.append(m.id)
 		var idx = markers.find(m)
 		if idx != -1:
@@ -1477,7 +1522,6 @@ func _do_apply_cut(cut_desc: Dictionary) -> Dictionary:
 				"position":       chains[ci][0],
 				"marker_type":    MARKER_TYPE_PATH,
 				"color":          saved_color,
-				"coordinates":    false,
 				"id":             new_id,
 				"marker_points":  chains[ci].duplicate(),
 				"path_closed":    false,
@@ -1552,7 +1596,7 @@ func update_ui():
 		ui.update_ui()
 
 # ============================================================================
-# UI PANEL AND CONTROLS (delegates to GuidesLinesToolUI)
+# UI PANEL AND PARAMETER ACTIONS
 # ============================================================================
 
 # Create the UI panel for the tool with all controls
@@ -1560,25 +1604,253 @@ func create_ui_panel():
 	if ui:
 		ui.create_ui_panel()
 
-# Adjust angle using mouse wheel (Line type)
+# Parameter actions work independently of the sidebar controls.
+func save_current_type_settings():
+	if not TYPE_SETTING_FIELDS.has(active_marker_type):
+		return
+	var settings = type_settings.get(active_marker_type, {})
+	for key in TYPE_SETTING_FIELDS[active_marker_type]:
+		settings[key] = get(TYPE_SETTING_FIELDS[active_marker_type][key][0])
+	type_settings[active_marker_type] = settings
+
+func load_type_settings(marker_type):
+	if not TYPE_SETTING_FIELDS.has(marker_type) or not type_settings.has(marker_type):
+		return
+	for key in TYPE_SETTING_FIELDS[marker_type]:
+		var field = TYPE_SETTING_FIELDS[marker_type][key]
+		set(field[0], type_settings[marker_type].get(key, field[1]))
+	if ui:
+		ui.sync_type_settings_controls(marker_type)
+
+func set_marker_type(marker_type):
+	if not marker_type in [MARKER_TYPE_LINE, MARKER_TYPE_SHAPE, MARKER_TYPE_PATH, MARKER_TYPE_FILL, MARKER_TYPE_TEMPLATE]:
+		return
+	save_current_type_settings()
+	if active_marker_type == MARKER_TYPE_PATH and marker_type != MARKER_TYPE_PATH:
+		_cancel_path_placement()
+	if active_marker_type == MARKER_TYPE_TEMPLATE and marker_type != MARKER_TYPE_TEMPLATE:
+		template_capture_mode = false
+		if ui: ui._update_template_capture_button(false)
+	active_marker_type = marker_type
+	load_type_settings(marker_type)
+	if ui: ui.sync_type_selector_to_active_type()
+	if overlay: overlay.update()
+	if LOGGER: LOGGER.debug("Marker type changed to: %s" % marker_type)
+
+func set_shape_mode(mode: String):
+	# Set all modes to false first
+	merge_shapes = false
+	conforming_mode = false
+	wrapping_mode = false
+	difference_mode = false
+	cut_mode = false
+
+	# Activate the selected mode (normal means all stay false)
+	match mode:
+		"merge":
+			merge_shapes = true
+		"conforming":
+			conforming_mode = true
+		"wrapping":
+			wrapping_mode = true
+		"difference":
+			difference_mode = true
+		"cut":
+			cut_mode = true
+		"normal":
+			pass  # All modes already false
+
+	# Update button pressed states
+	if ui:
+		ui._update_shape_mode_buttons(mode)
+		ui._sync_template_overlap_mode_buttons()
+
+	if LOGGER:
+		LOGGER.info("Shape interaction mode changed to: %s" % [mode])
+
+func set_path_end_arrow(enabled):
+	active_path_end_arrow = enabled
+	type_settings[MARKER_TYPE_PATH]["end_arrow"] = enabled
+	if ui: ui._update_path_end_arrow_checkbox()
+	if overlay: overlay.update()
+
+func set_angle(value):
+	active_angle = value
+	type_settings[MARKER_TYPE_LINE]["angle"] = value
+	if ui: ui._update_angle_spinbox()
+	if overlay:
+		overlay.update()
+	if LOGGER:
+		LOGGER.debug("Angle changed to: %.1f°" % [value])
+
+func set_color(new_color):
+	active_color = new_color
+	if overlay:
+		overlay.update()
+	if LOGGER:
+		LOGGER.debug("Color changed to: %s" % [new_color.to_html()])
+
+func set_mirror(enabled):
+	active_mirror = enabled
+	if ui: ui._update_mirror_checkbox()
+	if overlay:
+		overlay.update()
+	if LOGGER:
+		LOGGER.debug("Mirror toggled: %s" % [str(enabled)])
+
+func set_shape_angle(value):
+	active_shape_angle = value
+	type_settings[MARKER_TYPE_SHAPE]["angle"] = value
+	if ui: ui._update_shape_angle_spinbox()
+	if overlay:
+		overlay.update()
+	if LOGGER:
+		LOGGER.debug("Shape angle changed to: %.1f°" % [value])
+
+func set_path_arrow_head_length(value):
+	if value < 10.0:
+		value = 10.0
+	active_arrow_head_length = value
+	type_settings[MARKER_TYPE_PATH]["head_length"] = value
+	if ui: ui._update_path_arrow_head_length_spinbox()
+	if overlay:
+		overlay.update()
+	if LOGGER:
+		LOGGER.debug("Path arrow head length changed to: %.1f px" % [value])
+
+func set_path_arrow_head_angle(value):
+	active_arrow_head_angle = value
+	if ui: ui._update_path_arrow_head_angle_spinbox()
+	type_settings[MARKER_TYPE_PATH]["head_angle"] = value
+	if overlay:
+		overlay.update()
+	if LOGGER:
+		LOGGER.debug("Path arrow head angle changed to: %.1f°" % [value])
+
+func set_shape_size_mode(mode):
+	if not mode in ["radius", "side"]:
+		return
+	active_shape_size_mode = mode
+	type_settings[MARKER_TYPE_SHAPE]["size_mode"] = mode
+	if mode == "side":
+		# Compute equivalent side from the current circumradius
+		var computed_side = GeometryUtils.circumradius_to_side(active_shape_radius / _get_hex_edge_correction(), active_shape_sides)
+		if computed_side < 0.1:
+			computed_side = 0.1
+		active_shape_side = computed_side
+		type_settings[MARKER_TYPE_SHAPE]["side"] = computed_side
+		if ui: ui._update_shape_side_spinbox()
+	if ui: ui._update_shape_size_mode_ui()
+	if overlay:
+		overlay.update()
+	if LOGGER:
+		LOGGER.debug("Shape size mode changed to: %s" % [mode])
+
+func set_shape_preset(preset):
+	# Apply canonical defaults for the selected preset
+	match preset:
+		SHAPE_CIRCLE:
+			active_shape_sides = 64
+			active_shape_angle = 0.0
+		SHAPE_SQUARE:
+			active_shape_sides = 4
+			active_shape_angle = 45.0
+		SHAPE_PENTAGON:
+			active_shape_sides = 5
+			active_shape_angle = -90.0
+		SHAPE_HEXAGON:
+			active_shape_sides = 6
+			active_shape_angle = 0.0
+		SHAPE_OCTAGON:
+			active_shape_sides = 8
+			active_shape_angle = 0.0
+		SHAPE_CUSTOM:
+			active_shape_angle = 0.0
+
+	type_settings[MARKER_TYPE_SHAPE]["angle"] = active_shape_angle
+	type_settings[MARKER_TYPE_SHAPE]["sides"] = active_shape_sides
+
+	if ui: ui.sync_shape_preset(preset)
+
+	# Circle has no meaningful side — force radius mode and hide the size toggle
+	var is_circle = (preset == SHAPE_CIRCLE)
+	if is_circle and active_shape_size_mode == "side":
+		active_shape_size_mode = "radius"
+		type_settings[MARKER_TYPE_SHAPE]["size_mode"] = "radius"
+	if ui: ui._update_shape_size_mode_ui()
+
+	# In side mode with a non-circle preset, keep the user's side value and
+	# recompute the circumradius for the new number of sides.
+	if active_shape_size_mode == "side" and not is_circle:
+		recompute_radius_from_side()
+		if ui: ui._update_shape_radius_spinbox()
+
+	if ui: ui._update_shape_angle_spinbox()
+	if ui: ui._update_shape_sides_spinbox()
+
+	if overlay:
+		overlay.update()
+
+	if LOGGER:
+		LOGGER.info("Shape preset changed to: %s (sides=%d, angle=%.1f)" % [preset, active_shape_sides, active_shape_angle])
+
 func adjust_angle_with_wheel(direction):
-	if ui:
-		ui.adjust_angle_with_wheel(direction)
+	if active_marker_type == MARKER_TYPE_LINE:
+		set_angle(fposmod(active_angle + direction, 360.0))
 
-# Adjust shape radius using mouse wheel (Shape type)
+# Compatibility name: adjusts the size selected by Radius/Side mode.
 func adjust_shape_radius_with_wheel(direction):
-	if ui:
-		ui.adjust_shape_radius_with_wheel(direction)
+	if active_marker_type != MARKER_TYPE_SHAPE:
+		return
+	if active_shape_size_mode == "side":
+		set_shape_side(active_shape_side + direction * 0.1)
+	else:
+		set_shape_radius(active_shape_radius + direction * 0.1)
 
-# Adjust shape angle using mouse wheel (Shape type)
 func adjust_shape_angle_with_wheel(direction):
-	if ui:
-		ui.adjust_shape_angle_with_wheel(direction)
+	if active_marker_type == MARKER_TYPE_SHAPE:
+		set_shape_angle(fposmod(active_shape_angle + direction * 5.0, 360.0))
 
-# Rotate shape by 45 degrees via RMB shortcut
 func rotate_shape_45():
-	if ui:
-		ui.rotate_shape_45()
+	if active_marker_type == MARKER_TYPE_SHAPE:
+		set_shape_angle(fposmod(active_shape_angle + 45.0, 360.0))
+
+func set_shape_side(value):
+	if value < 0.1:
+		value = 0.1
+	active_shape_side = value
+	type_settings[MARKER_TYPE_SHAPE]["side"] = value
+	if ui: ui._update_shape_side_spinbox()
+	var new_radius = recompute_radius_from_side()
+	if ui: ui._update_shape_radius_spinbox()
+	if overlay:
+		overlay.update()
+	if LOGGER:
+		LOGGER.debug("Shape side changed to: %.2f cells (radius=%.3f)" % [value, new_radius])
+
+func set_shape_sides(value):
+	active_shape_sides = int(value)
+	type_settings[MARKER_TYPE_SHAPE]["sides"] = active_shape_sides
+	if ui: ui._update_shape_sides_spinbox()
+	# In side mode, recompute circumradius from the kept side value with the new sides count
+	if active_shape_size_mode == "side":
+		recompute_radius_from_side()
+		if ui: ui._update_shape_radius_spinbox()
+	if overlay:
+		overlay.update()
+	if LOGGER:
+		LOGGER.debug("Shape sides changed to: %d" % [active_shape_sides])
+
+func set_shape_radius(value):
+	if value < 0.1:
+		value = 0.1
+	active_shape_radius = value
+	type_settings[MARKER_TYPE_SHAPE]["radius"] = value
+	if ui: ui._update_shape_radius_spinbox()
+	if overlay:
+		overlay.update()
+	if LOGGER:
+		LOGGER.debug("Shape radius changed to: %.1f cells" % [value])
 
 func _try_apply_non_placing_shape_mode(desc: Dictionary, pos: Vector2) -> bool:
 	if desc.empty():

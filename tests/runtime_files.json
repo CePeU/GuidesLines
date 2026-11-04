@@ -9,6 +9,7 @@
     "scripts/tool/GuidesLinesTool.gd": "Constructed and cleaned up in test_tool_history.gd; generic inventory does not supply host context or break collaborator cycles."
   },
   "construct": [
+    {"path": "scripts/tool/GuidesLinesPersistence.gd", "args": []},
     {"path": "GuidesLines.gd", "args": []},
     {"path": "scripts/utils/GeometryUtils.gd", "args": []},
     {"path": "scripts/render/GuidesLinesRender.gd", "args": []},

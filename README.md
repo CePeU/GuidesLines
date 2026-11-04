@@ -1,10 +1,14 @@
 # GuidesLines - Dungeondraft Mod
 
-**Version:** 2.1.0  
+**Version:** 2.4.1<br>
 **Compatible with:** Dungeondraft 1.1.1.1 and later  
 **Requires:** _Lib-1.2.0
 
 Advanced guide system with fully customizable markers for precise map alignment and composition.
+
+### What's New in 2.4.1
+
+Technical maintenance improves code quality, reliability and performance, with expanded regression tests. Markers, fill regions and marker templates are now saved and restored with the map.
 
 ---
 
@@ -112,9 +116,10 @@ Advanced guide system with fully customizable markers for precise map alignment 
 
 ### 💾 Persistence
 
-- Markers saved with map files
-- All visual parameters preserved (angle, color, radius, etc.)
-- Backward compatible within v2.x versions
+- Line, Shape and Path markers, Fill regions and captured templates are stored inside the map file.
+- Saved geometry includes outlines modified by boolean operations, colors and marker parameters.
+- Map data has its own format version, independent of the mod release version. Only an exact format-version match is loaded; incompatible or malformed blocks load no GuidesLines objects. The next map save replaces the entire GuidesLines block using the current format, including when the current collection is empty.
+- In-progress placement, dragging, previews and undo history are session state and are not saved. Templates belong to their map.
 
 ---
 
@@ -138,7 +143,7 @@ Advanced guide system with fully customizable markers for precise map alignment 
 ### Verification
 
 1. Launch Dungeondraft
-2. Check **Mods** menu → **Mod Versions** — should show "Guide Markers v2.1.0"
+2. Check **Mods** menu → **Mod Versions** — should show "Guide Markers v2.4.1"
 3. Create/open a map
 4. Select **Design** category → **Guide Markers** tool (or press **`9`**)
 5. Tool panel should display marker type dropdown and settings
@@ -558,7 +563,13 @@ Markers stored in map file under `guide_markers` key:
 
 ## Version History
 
-### v2.1.0 (Current) — 2026-02-21
+### v2.4.1 (Current) — 2026-11-04
+- Technical maintenance: code cleanup, bug fixes, performance improvements and expanded regression tests.
+- Markers, fill regions and marker templates are saved and restored with the map.
+
+See [CHANGELOG.md](CHANGELOG.md) for the complete release history.
+
+### v2.1.0 — 2026-02-21
 - 🏗️ Geometry centralised into `GeometryUtils.gd` (Phase 3)
 - Internal API helpers extracted; no public signature changes
 

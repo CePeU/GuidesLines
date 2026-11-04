@@ -1,7 +1,7 @@
 {
   "name": "Guides Lines",
   "unique_id": "Choson.GuidesLines",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "author": "Choson",
   "description": "Advanced guide lines for map alignment: cross guides on cursor proximity and permanent center lines",
   "dd_version": "1.1.1.1",

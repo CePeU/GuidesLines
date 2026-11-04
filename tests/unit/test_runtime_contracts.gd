@@ -33,6 +33,7 @@ func test_entry_loads_classes_without_lib_and_waits_for_editor():
 	mod.start()
 	for name in ["GuideMarkerClass", "FillMarkerClass", "GuidesLinesToolClass", "MarkerOverlayClass", "CrossOverlay", "PermanentOverlay", "GuidesLinesApiClass"]:
 		assert_not_null(mod.get(name), "Loaded by real start(): " + name)
+	assert_true(mod.persistence != null, "Persistence is loaded by the real entry point")
 	mod.update(0.016)
 	assert_false(mod.tool_created)
 	assert_null(mod.guides_tool)

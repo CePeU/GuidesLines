@@ -75,6 +75,7 @@ var perm_overlay = null
 
 # External API (for intermod communication)
 var guides_lines_api = null
+var persistence = null
 
 # Cached custom_snap mod reference (checked once after map load)
 var cached_snappy_mod = null
@@ -109,7 +110,7 @@ func start():
 		if self.Global.API and self.Global.API.has("Logger"):
 			LOGGER = self.Global.API.Logger.for_class(CLASS_NAME)
 			
-			LOGGER.info("Mod starting - version 2.4.0")
+			LOGGER.info("Mod starting - version 2.4.1")
 			LOGGER.debug("Registered with _Lib successfully")
 			
 			# Register UpdateChecker for automatic update notifications
@@ -188,6 +189,12 @@ func start():
 		LOGGER.debug("Classes loaded successfully")
 	
 	# Register external API after all classes are loaded
+	var persistence_class = ResourceLoader.load(self.Global.Root + "scripts/tool/GuidesLinesPersistence.gd", "GDScript", false)
+	if persistence_class:
+		persistence = persistence_class.new()
+	else:
+		if LOGGER: LOGGER.error("Failed to load GuidesLinesPersistence.gd; map persistence unavailable")
+		else: print("GuidesLines: ERROR - map persistence unavailable")
 	_register_external_api()
 
 # Initialize ModConfig: registers hotkeys and settings through _Lib
@@ -275,6 +282,9 @@ func update(_delta):
 
 
 	# Only work when map is loaded
+	_refresh_map_references()
+	if persistence:
+		persistence.update()
 	if Global.World == null or Global.WorldUI == null:
 		return
 	
@@ -300,9 +310,6 @@ func update(_delta):
 	# Check if our tool is active and enable/disable accordingly
 	if guides_tool:
 		# Refresh cached references before checking tool state
-		guides_tool.cached_world = Global.World
-		guides_tool.cached_worldui = Global.WorldUI
-		guides_tool.cached_camera = Global.Camera
 		guides_tool.cached_snappy_mod = cached_snappy_mod
 		
 		# Check if tool is active by tool name
@@ -321,6 +328,31 @@ func update(_delta):
 	# Update proximity and permanent guides if enabled
 	if cross_guides_enabled or perm_vertical_enabled or perm_horizontal_enabled:
 		_update_proximity_and_permanent_guides(_delta)
+
+# Drop owned overlays when the host replaces their map or parent node.
+# Marker data is retained; this only releases scene resources and host references.
+func _refresh_map_references():
+	var world_changed = guides_tool != null and guides_tool.cached_world != Global.World
+	for owner in [self, guides_tool]:
+		if owner == null:
+			continue
+		var properties = ["cross_overlay", "perm_overlay"] if owner == self else ["overlay"]
+		for property in properties:
+			var node = owner.get(property)
+			if not is_instance_valid(node):
+				owner.set(property, null)
+			elif world_changed or Global.World == null or node.get_parent() != Global.WorldUI:
+				if node.get_parent() != null:
+					node.get_parent().remove_child(node)
+				node.queue_free()
+				owner.set(property, null)
+	if guides_tool:
+		guides_tool.cached_world = Global.World
+		guides_tool.cached_worldui = Global.WorldUI
+		guides_tool.cached_camera = Global.Camera if Global.World != null and Global.WorldUI != null else null
+	if Global.World == null or Global.WorldUI == null:
+		cross_show_v = false
+		cross_show_h = false
 
 # Update proximity and permanent guide features
 # Only runs if these features are enabled in settings
@@ -444,6 +476,8 @@ func create_tool():
 	
 	# Create UI for the tool
 	guides_tool.create_ui_panel()
+	if persistence:
+		persistence.attach(self)
 	
 	if LOGGER:
 		LOGGER.debug("Guide Markers tool created successfully")

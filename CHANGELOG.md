@@ -5,6 +5,18 @@ All notable changes to the Guides Lines mod will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.1] — 2026-11-04
+
+### Changed
+
+- Technical maintenance: simplified internal code, fixed geometry and marker lifecycle issues, improved rendering and spatial queries, and expanded regression tests.
+
+### Added
+
+- Markers, fill regions and marker templates are now saved and restored with the map. The save format is versioned; incompatible data is skipped and replaced with the current format on the next save.
+
+---
+
 ## [2.4.0] — 2026-05-03
 
 ### Added — Template Mode

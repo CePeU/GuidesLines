@@ -92,7 +92,7 @@ func place_line_marker(position: Vector2, angle: float = 0.0, mirror: bool = fal
 		"position": position,
 		"marker_type": "Line",
 		"color": color if color != null else tool.active_color,
-		"coordinates": tool.show_coordinates,
+		"show_coordinates": tool.show_coordinates,
 		"id": marker_id,
 		"angle": angle,
 		"mirror": mirror,
@@ -120,7 +120,6 @@ func place_shape_marker(position: Vector2, radius: float = 1.0,
 		"position": position,
 		"marker_type": "Shape",
 		"color": color if color != null else tool.active_color,
-		"coordinates": tool.show_coordinates,
 		"id": marker_id,
 		"shape_radius": radius,
 		"shape_angle": angle,
@@ -150,7 +149,6 @@ func place_path_marker(points: Array, closed: bool = false, color = null) -> int
 		"position": points[0],
 		"marker_type": "Path",
 		"color": color if color != null else tool.active_color,
-		"coordinates": tool.show_coordinates,
 		"id": marker_id,
 		"marker_points": points.duplicate(),
 		"path_closed": closed,
@@ -180,7 +178,6 @@ func place_arrow_marker(from_pos: Vector2, to_pos: Vector2,
 		"position": from_pos,
 		"marker_type": "Path",
 		"color": color if color != null else tool.active_color,
-		"coordinates": tool.show_coordinates,
 		"id": marker_id,
 		"marker_points": [from_pos, to_pos],
 		"path_closed": false,
@@ -278,7 +275,6 @@ func place_shape_conforming(position: Vector2, radius: float = 1.0,
 		"position":     position,
 		"marker_type":  "Shape",
 		"color":        color if color != null else tool.active_color,
-		"coordinates":  tool.show_coordinates,
 		"id":           marker_id,
 		"shape_radius": radius,
 		"shape_angle":  angle,
@@ -323,7 +319,6 @@ func place_shape_wrapping(position: Vector2, radius: float = 1.0,
 		"position":     position,
 		"marker_type":  "Shape",
 		"color":        color if color != null else tool.active_color,
-		"coordinates":  tool.show_coordinates,
 		"id":           marker_id,
 		"shape_radius": radius,
 		"shape_angle":  angle,
@@ -464,7 +459,7 @@ func find_nearest_marker(coords: Vector2, radius: float = 100.0):
 ## Returns a Dictionary on success:
 ##   { "point":    Vector2       — actual closest point on the marker's geometry,
 ##     "vertex":   Vector2|null  — nearest vertex of the marker (only for Shape/poly
-##                                  and Path; null for Line, Circle, Arrow),
+##                                  and Path; null for Line),
 ##     "distance": float         — distance from [coords] to [point],
 ##     + all keys from marker.Save(), plus "position" as Vector2 }
 ## Returns null if no marker geometry is found within the given radius.
@@ -473,64 +468,15 @@ func find_nearest_marker(coords: Vector2, radius: float = 100.0):
 ##   coords — world-space Vector2 to search around
 ##   radius — search radius in world units (default 100.0)
 func find_nearest_marker_by_geometry(coords: Vector2, radius: float = 100.0):
-	if not _has_tool():
-		return null
-	var tool = _tool()
-
-	var ctx = _get_map_context(tool)
-	var map_rect  = ctx[0]
-	var cell_size = ctx[1]
-
-	var nearest_marker = null
-	var nearest_dist = radius
-	var nearest_point = null   # actual closest Vector2 on the geometry
-	var nearest_vertex = null  # nearest polygon vertex (Shape/poly and Path only)
-
-	for marker in tool.markers:
-		# Always start with the raw position distance / point
-		var min_dist = marker.position.distance_to(coords)
-		var min_point = marker.position
-
-		match marker.marker_type:
-			"Line":
-				var draw_data = marker.get_draw_data(map_rect, cell_size)
-				if draw_data.has("segments"):
-					for seg in draw_data["segments"]:
-						var pt = GeometryUtils.closest_point_on_segment(coords, seg[0], seg[1])
-						var d = coords.distance_to(pt)
-						if d < min_dist:
-							min_dist = d
-							min_point = pt
-
-			"Shape":
-				var draw_data = marker.get_draw_data(map_rect, cell_size)
-				if draw_data.has("primitives"):
-					for prim in draw_data["primitives"]:
-						if prim.type == "seg":
-							var pt = GeometryUtils.closest_point_on_segment(coords, prim.a, prim.b)
-							var d = coords.distance_to(pt)
-							if d < min_dist:
-								min_dist = d
-								min_point = pt
-
-			"Path":
-				var pts = marker.marker_points
-				if pts.size() >= 2:
-					var pt = GeometryUtils.closest_point_on_polygon_edges(coords, pts, marker.path_closed)
-					var d = coords.distance_to(pt)
-					if d < min_dist:
-						min_dist = d
-						min_point = pt
-
-		if min_dist <= nearest_dist:
-			nearest_dist = min_dist
-			nearest_point = min_point
-			nearest_marker = marker
-
-	if nearest_marker == null:
+	var hit = _find_nearest_geometry(coords, radius, true)
+	if hit == null:
 		if LOGGER:
 			LOGGER.debug("API: find_nearest_marker_by_geometry — nothing found within radius %.1f of %s" % [radius, str(coords)])
 		return null
+	var nearest_marker = hit.marker
+	var nearest_point = hit.point
+	var nearest_dist = hit.distance
+	var nearest_vertex = null
 	if nearest_marker.marker_type == "Shape":
 		var vertices = []
 		for prim in nearest_marker.get_primitives():
@@ -546,6 +492,12 @@ func find_nearest_marker_by_geometry(coords: Vector2, radius: float = 100.0):
 	if LOGGER:
 		LOGGER.debug("API: find_nearest_marker_by_geometry — id=%d type=%s point=%s vertex=%s dist=%.3f" % [nearest_marker.id, nearest_marker.marker_type, str(nearest_point), str(nearest_vertex), nearest_dist])
 	return d
+
+# Anchor inclusion and tie order are part of the two public query contracts.
+func _find_nearest_geometry(coords: Vector2, radius: float, include_anchor: bool):
+	if not _has_tool():
+		return null
+	return _tool().find_nearest_geometry(coords, radius, include_anchor)
 
 ## Finds the nearest intersection point between an infinite line and any marker
 ## geometry within [radius] world units of [coords].
@@ -666,52 +618,15 @@ func find_line_intersection(line_from: Vector2, line_to: Vector2, coords: Vector
 ##   coords — world-space Vector2 origin of the search
 ##   radius — search radius in world units (default 100.0)
 func find_nearest_geometry_point(coords: Vector2, radius: float = 100.0):
-	if not _has_tool():
-		return null
-	var tool = _tool()
-
-	var ctx = _get_map_context(tool)
-	var map_rect  = ctx[0]
-	var cell_size = ctx[1]
-
-	var best_point  = null
-	var best_dist   = radius
-	var best_marker = null
-
-	for marker in tool.markers:
-		var candidates = []  # Array of Vector2 — closest points per geometry piece
-
-		match marker.marker_type:
-			"Line":
-				var draw_data = marker.get_draw_data(map_rect, cell_size)
-				if draw_data.has("segments"):
-					for seg in draw_data["segments"]:
-						candidates.append(GeometryUtils.closest_point_on_segment(coords, seg[0], seg[1]))
-
-			"Shape":
-				var draw_data = marker.get_draw_data(map_rect, cell_size)
-				if draw_data.has("primitives"):
-					for prim in draw_data["primitives"]:
-						if prim.type == "seg":
-							candidates.append(GeometryUtils.closest_point_on_segment(coords, prim.a, prim.b))
-
-			"Path":
-				var pts = marker.marker_points
-				if pts.size() >= 2:
-					candidates.append(GeometryUtils.closest_point_on_polygon_edges(coords, pts, marker.path_closed))
-
-		for pt in candidates:
-			var dist = coords.distance_to(pt)
-			if dist <= best_dist:
-				best_dist   = dist
-				best_point  = pt
-				best_marker = marker
-
-	if best_marker == null:
+	var hit = _find_nearest_geometry(coords, radius, false)
+	if hit == null:
 		if LOGGER:
 			LOGGER.debug("API: find_nearest_geometry_point — nothing found within radius %.1f of %s" % [radius, str(coords)])
 		return null
 
+	var best_marker = hit.marker
+	var best_point = hit.point
+	var best_dist = hit.distance
 	var result = _marker_save_with_pos(best_marker)
 	result["point"]       = best_point
 	result["distance"]    = best_dist
@@ -938,7 +853,7 @@ func get_shape_polygon(marker_id: int):
 # ============================================================================
 
 ## Queues a one-frame Shape preview at [coords].
-## The overlay renders it on the next draw pass, then clears it automatically.
+## The overlay retains it through that frame's draw passes, then clears it.
 ## Call this every frame (e.g. from _process) to keep the preview alive.
 ##
 ## Parameters:
@@ -953,6 +868,7 @@ func set_shape_preview(coords: Vector2, radius: float = 1.0,
 		return
 	var tool = _tool()
 	var c = color if color != null else Color(tool.active_color.r, tool.active_color.g, tool.active_color.b, 0.5)
+	tool._api_preview_frame = Engine.get_idle_frames()
 	tool._api_preview = {
 		"pos":    coords,
 		"radius": radius,

@@ -19,7 +19,7 @@ var arrow_head_angle = 30.0  # Arrowhead angle in degrees [Path only, when path_
 var color = Color(0, 0.7, 1, 1)  # Line/Shape/Path color
 var mirror = false  # Mirror line at 180 degrees [Line only]
 var id = -1  # Unique identifier
-var show_coordinates = false  # Show grid coordinates on marker lines/shapes/paths/arrows
+var show_coordinates = false  # Show grid coordinates on Line markers only
 
 const MARKER_SIZE = 10.0  # Doubled size
 const MARKER_COLOR = Color(1, 0, 0, 1)  # Red
@@ -93,7 +93,7 @@ func rebuild_coord_cache(map_rect: Rect2, cell_size, custom_snap) -> void:
 
 	var angles_list = [angle]
 	if mirror:
-		angles_list.append(fmod(angle + 180.0, 360.0))
+		angles_list.append(fposmod(angle + 180.0, 360.0))
 
 	for ang in angles_list:
 		var angle_rad = deg2rad(ang)
@@ -108,9 +108,13 @@ func _build_coord_points_vanilla(direction: Vector2, perp: Vector2, map_rect: Re
 	if cell_size == null or cell_size.x <= 0 or cell_size.y <= 0:
 		return
 	var step     = min(cell_size.x, cell_size.y)
-	var max_dist = sqrt(pow(map_rect.size.x, 2) + pow(map_rect.size.y, 2))
-	var distance = step
-	while distance < max_dist:
+	var segment = GeometryUtils.get_ray_to_rect_edge(position, direction, map_rect)
+	if segment[0] == segment[1]:
+		return
+	var max_dist = position.distance_to(segment[1])
+	# Keep the sample lattice anchored at the marker, including off-map origins.
+	var distance = max(1.0, ceil(position.distance_to(segment[0]) / step)) * step
+	while distance <= max_dist:
 		var test_pos = position + direction * distance
 		if not map_rect.has_point(test_pos):
 			distance += step
@@ -129,8 +133,10 @@ func _build_coord_points_vanilla(direction: Vector2, perp: Vector2, map_rect: Re
 
 func _build_coord_points_custom_snap(direction: Vector2, perp: Vector2, map_rect: Rect2, custom_snap) -> void:
 	var snap_interval = custom_snap.snap_interval
+	if snap_interval.x <= 0 or snap_interval.y <= 0:
+		return
 	var test_spacing  = min(snap_interval.x, snap_interval.y) * 0.5
-	var max_dist      = sqrt(pow(map_rect.size.x, 2) + pow(map_rect.size.y, 2))
+	var max_dist      = map_rect.size.length()
 	var checked       = {}
 	var distance      = test_spacing
 	while distance < max_dist:
@@ -164,7 +170,19 @@ func set_property(prop, value):
 		"shape_sides":
 			if shape_sides != value: shape_sides = value; changed = true
 		"position":
-			if position != value: position = value; changed = true
+			if position != value:
+				var delta = value - position
+				if marker_type == "Shape" and cached_draw_data.has("primitives"):
+					var segments = get_primitives().duplicate(true)
+					for seg in segments:
+						seg.a += delta
+						seg.b += delta
+					set_primitives(segments)
+				elif marker_type == "Path":
+					for i in range(marker_points.size()):
+						marker_points[i] += delta
+				position = value
+				changed = true
 		"mirror":
 			if mirror != value: mirror = value; changed = true
 		"marker_type":
@@ -213,10 +231,29 @@ func clear_clip():
 func set_primitives(segs: Array):
 	cached_draw_data["primitives"] = segs
 	cached_draw_data.erase("polygon")
+	cached_draw_data.erase("bounds")
 
 ## Get the current segments.
 func get_primitives() -> Array:
 	return cached_draw_data.get("primitives", [])
+
+# Derived from actual geometry, never the original radius or current anchor.
+func get_geometry_bounds(map_rect, cell_size):
+	var data = get_draw_data(map_rect, cell_size)
+	if not data.has("bounds"):
+		var points = []
+		if marker_type == "Shape":
+			for primitive in get_primitives():
+				if primitive.type == "seg":
+					points.append(primitive.a)
+					points.append(primitive.b)
+		elif marker_type == "Path":
+			points = marker_points
+		var bounds = null
+		if not points.empty():
+			bounds = GeometryUtils.polygon_intersection_bounds(points)
+		data["bounds"] = bounds
+	return data["bounds"]
 
 # Derived geometry only; callers replace segments through set_primitives().
 func get_polygon() -> Array:
@@ -238,7 +275,7 @@ func _recalculate_geometry(map_rect, cell_size):
 		cached_draw_data["segments"] = []
 		
 		var angles_list = [angle]
-		if mirror: angles_list.append(fmod(angle + 180.0, 360.0))
+		if mirror: angles_list.append(fposmod(angle + 180.0, 360.0))
 		
 		for ang in angles_list:
 			var dir = Vector2(cos(deg2rad(ang)), sin(deg2rad(ang)))

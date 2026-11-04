@@ -15,6 +15,7 @@ var _last_fill_count = 0
 var _last_path_active = false
 var _last_mouse_pos = Vector2.ZERO  # Track mouse position for preview updates
 var _mouse_in_ui = false  # Track if cursor is in UI area
+var _api_preview_frame = -1
 
 # Preview marker constants (matching GuideMarker constants)
 const PREVIEW_MARKER_SIZE = 10.0  # Base size before zoom adaptation
@@ -50,10 +51,7 @@ func _process(_delta):
 	# Track mouse position for preview marker (when tool is enabled and not in delete mode)
 	if tool and tool.is_enabled and not tool.delete_mode and tool.cached_worldui and tool.cached_worldui.IsInsideBounds:
 		var current_mouse_pos = tool.cached_worldui.MousePosition
-		var viewport_mouse_pos = get_viewport().get_mouse_position()
-		
-		# Check if mouse is over UI (x < 450 means over left panel)
-		var new_mouse_in_ui = viewport_mouse_pos.x < 450
+		var new_mouse_in_ui = not _is_mouse_over_canvas()
 		
 		# If mouse moved between UI and world, or position changed in world
 		if new_mouse_in_ui != _mouse_in_ui:
@@ -99,8 +97,12 @@ func _process(_delta):
 			_last_path_active = path_active
 			needs_update = true
 	
-	# Check if an API preview was queued
+	# Retain the request through every draw in its frame; expire before the next.
 	if tool and not tool._api_preview.empty():
+		if _api_preview_frame != tool._api_preview_frame:
+			_api_preview_frame = tool._api_preview_frame
+		elif Engine.get_idle_frames() > _api_preview_frame:
+			tool._api_preview = {}
 		needs_update = true
 
 	# Track drag position for move mode
@@ -115,11 +117,32 @@ func _process(_delta):
 		update()
 
 # Handle mouse input for placing markers
+func _is_mouse_over_canvas() -> bool:
+	if not tool or not tool.parent_mod:
+		return false
+	var editor = tool.parent_mod.Global.Editor
+	if not editor is Node or not is_instance_valid(editor):
+		return false
+	var windows = editor.get("Windows")
+	if windows != null:
+		for window in windows.values():
+			if is_instance_valid(window) and window.visible:
+				return false
+	# This is the host's Content.gui_input target (Editor.tscn / Editor.cs).
+	# Local coordinates account for UI scale and resized side/top/bottom panels.
+	var content = editor.get_node_or_null("VPartition/Panels/HSplit/Content")
+	return content is Control and content.is_visible_in_tree() and Rect2(Vector2.ZERO,
+		content.rect_size).has_point(content.get_local_mouse_position())
+
 func _input(event):
 	if not tool or not tool.is_enabled:
 		return
+	if event is InputEventMouse and not _is_mouse_over_canvas():
+		# Release still finishes an existing drag after the pointer leaves the canvas.
+		if not (event is InputEventMouseButton and event.button_index == BUTTON_LEFT and not event.pressed):
+			return
 	
-	# Handle RIGHT-CLICK for Path finalization or Arrow cancellation
+	# Handle RIGHT-CLICK for Path finalization
 	if event is InputEventMouseButton and event.button_index == BUTTON_RIGHT:
 		if tool.path_placement_active and event.pressed:
 			tool._finalize_path_marker(false)  # Finish as open path
@@ -200,29 +223,8 @@ func _input(event):
 		
 		# Handle left click for placing/deleting markers
 		if event.button_index == BUTTON_LEFT and event.pressed:
-			# Skip if any Dungeondraft window/popup is currently open.
-			# _input fires before Control._gui_input, so is_input_handled() is not yet set —
-			# we must check visible windows explicitly.
-			var editor = tool.parent_mod.Global.Editor
-			for window in editor.Windows.values():
-				if window.visible:
-					return
-
 			# Check if click is inside world bounds
 			if tool.cached_worldui and tool.cached_worldui.IsInsideBounds:
-				# Get mouse position in viewport coordinates
-				var mouse_pos = get_viewport().get_mouse_position()
-				var viewport_size = get_viewport().size
-				
-				# Ignore clicks outside the map canvas:
-				#   x < 450              — left tool panel
-				#   y < 100              — top UI bar
-				#   y > height - 100     — bottom UI bar
-				if mouse_pos.x < 450:
-					return
-				if mouse_pos.y < 100 or mouse_pos.y > viewport_size.y - 100:
-					return
-				
 				var pos = tool.cached_worldui.MousePosition
 				
 				if tool.LOGGER:
@@ -328,7 +330,6 @@ func _draw():
 	# Draw API-requested shape preview (external callers; rendered regardless of tool state)
 	if not tool._api_preview.empty():
 		_draw_api_shape_preview(tool._api_preview, cam_zoom, cell_size, preview_line_width, preview_marker_size)
-		tool._api_preview = {}
 
 	# Draw move mode drag preview
 	if tool.move_mode and tool._move_selected_marker:
@@ -453,7 +454,7 @@ func _draw_custom_marker_preview(pos, world_left, world_right, world_top, world_
 		# Draw preview line(s)
 		var angles = [tool.active_angle]
 		if tool.active_mirror:
-			angles.append(fmod(tool.active_angle + 180.0, 360.0))
+			angles.append(fposmod(tool.active_angle + 180.0, 360.0))
 		
 		for angle in angles:
 			var line_points = _calculate_line_endpoints(
@@ -503,12 +504,10 @@ func _draw_template_preview(preview_pos: Vector2, world_left: float, world_right
 	match data.get("marker_type", ""):
 		"Line":
 			var base_angle = data.get("angle", 0.0)
-			var eff_angle = fmod(base_angle + tool.template_rotation_offset, 360.0)
-			if eff_angle < 0.0:
-				eff_angle += 360.0
+			var eff_angle = fposmod(base_angle + tool.template_rotation_offset, 360.0)
 			var angles = [eff_angle]
 			if data.get("mirror", false):
-				angles.append(fmod(eff_angle + 180.0, 360.0))
+				angles.append(fposmod(eff_angle + 180.0, 360.0))
 			for ang in angles:
 				var line_points = _calculate_line_endpoints(preview_pos, ang, world_left, world_right, world_top, world_bottom, map_rect)
 				if line_points[0] != line_points[1]:
@@ -524,7 +523,7 @@ func _draw_template_preview(preview_pos: Vector2, world_left: float, world_right
 			elif cell_size:
 				# Standard unmodified shape — regenerate from parameters
 				var radius_px = data.get("shape_radius", 1.0) * min(cell_size.x, cell_size.y)
-				var eff_angle = fmod(data.get("shape_angle", 0.0) + tool.template_rotation_offset, 360.0)
+				var eff_angle = fposmod(data.get("shape_angle", 0.0) + tool.template_rotation_offset, 360.0)
 				var angle_rad = deg2rad(eff_angle)
 				var vertices  = GeometryUtils.calculate_polygon_vertices(preview_pos, radius_px, data.get("shape_sides", 6), angle_rad)
 				GuidesLinesRender.draw_polygon_outline(self, vertices, line_color, LINE_WIDTH)
@@ -551,7 +550,7 @@ func _draw_move_drag_preview(marker, drag_pos: Vector2, world_left, world_right,
 	if marker.marker_type == "Line":
 		var angles = [marker.angle]
 		if marker.mirror:
-			angles.append(fmod(marker.angle + 180.0, 360.0))
+			angles.append(fposmod(marker.angle + 180.0, 360.0))
 		for ang in angles:
 			var line_points = _calculate_line_endpoints(drag_pos, ang, world_left, world_right, world_top, world_bottom, map_rect)
 			if line_points[0] != line_points[1]:

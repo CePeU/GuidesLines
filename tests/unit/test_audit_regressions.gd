@@ -50,6 +50,282 @@ func on_settings_changed(key, value):
 	changes.append([key, value])
 
 
+func test_api_preview_survives_repeated_draws_and_expires_without_another_request():
+	var overlay = probe("scripts/overlays/MarkerOverlay.gd")
+	overlay.tool = tool
+	tool.overlay = overlay
+	var camera = Camera2D.new()
+	owned_nodes.append(camera)
+	tool.cached_camera = camera
+	api.set_shape_preview(Vector2(50, 50))
+	var request = tool._api_preview.duplicate(true)
+	overlay._process(0.016)
+	overlay._draw()
+	var line_count = overlay.lines.size()
+	assert_true(line_count > 0)
+	overlay._draw()
+	assert_eq(overlay.lines.size(), line_count * 2)
+	assert_eq_deep(tool._api_preview, request)
+	while Engine.get_idle_frames() <= tool._api_preview_frame:
+		yield(get_tree(), "idle_frame")
+	overlay._process(0.016)
+	assert_true(tool._api_preview.empty(), "Preview expires on a later process frame")
+	for _frame in range(2):
+		api.set_shape_preview(Vector2(60, 60))
+		overlay._process(0.016)
+		assert_false(tool._api_preview.empty(), "A fresh request survives process ordering")
+		yield(get_tree(), "idle_frame")
+	api.clear_shape_preview()
+	assert_true(tool._api_preview.empty())
+	tool.overlay = null
+
+
+func test_vanilla_line_labels_clip_samples_without_changing_origin_lattice():
+	var marker = tool.GuideMarkerClass.new()
+	var bounds = Rect2(0, 0, 100, 100)
+	for origin in [Vector2(0, 50), Vector2(100, 50), Vector2(-30, 50), Vector2(-10000, 50), Vector2(-30, 150)]:
+		for direction in [Vector2.RIGHT, Vector2.LEFT, Vector2(1, 1).normalized()]:
+			marker.position = origin
+			marker.cached_coord_points = []
+			marker._build_coord_points_vanilla(direction, Vector2(-direction.y, direction.x), bounds, Vector2(10, 10))
+			var expected = []
+			# Brute-force reference spans both off-map origins and the whole map.
+			for index in range(1, 1100):
+				var point = origin + direction * (index * 10.0)
+				var snapped = point.snapped(Vector2(10, 10))
+				if bounds.has_point(point) and point.distance_to(snapped) < 2.5:
+					expected.append({"grid_pos": snapped, "text": str(index), "perp": Vector2(-direction.y, direction.x)})
+			assert_eq_deep(marker.cached_coord_points, expected)
+
+
+func test_query_bounds_cache_tracks_authoritative_geometry_and_invalidation():
+	var marker = add_shape()
+	var segments = [{"type": "seg", "a": Vector2(500, 0), "b": Vector2(500, 100)}]
+	marker.set_primitives(segments)
+	assert_eq(api.find_nearest_geometry_point(Vector2(500, 100), 0.0).marker_id, 1)
+	assert_true(marker.cached_draw_data.has("bounds"))
+	assert_eq(api.find_nearest_marker_by_geometry(Vector2.ZERO, 0.0).id, 1, "Bounds cannot cull anchors")
+	var saved = marker.Save()
+	tool._do_move_marker(marker, Vector2(50, 50))
+	assert_null(api.find_nearest_geometry_point(Vector2(500, 100), 0.0))
+	assert_eq(api.find_nearest_geometry_point(Vector2(550, 150), 0.0).marker_id, 1)
+	marker.Load(saved)
+	assert_eq(api.find_nearest_geometry_point(Vector2(500, 100), 0.0).marker_id, 1)
+	marker.set_primitives([])
+	assert_null(api.find_nearest_geometry_point(Vector2(500, 100), 0.0))
+	marker.clear_clip()
+	assert_not_null(api.find_nearest_geometry_point(Vector2.ZERO, 200.0))
+	marker.set_property("marker_type", "Path")
+	marker.set_property("marker_points", [Vector2(1000, 1000), Vector2(1000, 1100)])
+	assert_eq(api.find_nearest_geometry_point(Vector2(1000, 1050), 0.0).marker_id, 1)
+	marker.set_property("marker_points", [Vector2(2000, 1000), Vector2(2000, 1100)])
+	assert_null(api.find_nearest_geometry_point(Vector2(1000, 1050), 0.0))
+	assert_eq(api.find_nearest_geometry_point(Vector2(2000, 1050), 0.0).marker_id, 1)
+	marker.set_property("marker_points", [])
+	assert_null(api.find_nearest_geometry_point(Vector2(2000, 1050), 0.0))
+
+
+func test_spinbox_rows_preserve_limits_targets_and_visibility():
+	make_panel()
+	for item in [["AngleSpinBox", 0.0, 360.0, 1.0, false],
+			["ShapeRadiusSpinBox", 0.1, 100.0, 0.1, true],
+			["ShapeSideSpinBox", 0.1, 100.0, 0.1, true],
+			["ShapeAngleSpinBox", 0.0, 360.0, 1.0, false],
+			["ShapeSidesSpinBox", 3.0, 64.0, 1.0, false],
+			["PathArrowHeadLengthSpinBox", 10.0, 200.0, 5.0, true],
+			["PathArrowHeadAngleSpinBox", 10.0, 60.0, 5.0, false],
+			["MarkersOpacitySpinBox", 0.0, 100.0, 5.0, false]]:
+		var control = tool.ui.get_control(item[0])
+		assert_eq(control.min_value, item[1])
+		assert_eq(control.max_value, item[2])
+		assert_eq(control.step, item[3])
+		assert_eq(control.allow_greater, item[4])
+		assert_false(control.allow_lesser)
+	tool.ui.get_control("MarkersOpacitySpinBox").value = 55.0
+	assert_almost_eq(mod.markers_opacity, 0.55, 0.00001)
+	assert_false(tool.ui.get_control("SideRow").visible)
+	assert_false(tool.ui.get_control("SidesRow").visible)
+
+
+func test_overlay_canvas_gate_tracks_layout_scale_visibility_and_dialogs():
+	var editor_script = GDScript.new()
+	editor_script.source_code = "extends CanvasLayer\nvar Windows = {}\nvar IsSnapping = false\n"
+	assert_eq(editor_script.reload(), OK)
+	var editor = editor_script.new()
+	owned_nodes.append(editor)
+	add_child(editor)
+	mod.Global.Editor = editor
+	var parent = editor
+	for name in ["VPartition", "Panels", "HSplit"]:
+		var node = Control.new()
+		node.name = name
+		parent.add_child(node)
+		parent = node
+	# Controlled pointer; actual Godot Control transforms and visibility are used.
+	var content_script = GDScript.new()
+	content_script.source_code = "extends Control\nvar test_mouse = Vector2.ZERO\nfunc get_local_mouse_position():\n\treturn get_global_transform_with_canvas().affine_inverse().xform(test_mouse)\n"
+	assert_eq(content_script.reload(), OK)
+	var content = content_script.new()
+	content.name = "Content"
+	parent.add_child(content)
+	content.rect_position = Vector2(300, 50)
+	content.rect_size = Vector2(700, 400)
+	var overlay = probe("scripts/overlays/MarkerOverlay.gd")
+	add_child(overlay)
+	overlay.set_process(false)
+	overlay.tool = tool
+	tool.is_enabled = true
+	for scale in [1.0, 1.25, 1.5, 2.0]:
+		content.rect_scale = Vector2.ONE * scale
+		for point in [Vector2(1, 1), Vector2(350, 200), Vector2(699, 399)]:
+			content.test_mouse = content.get_global_transform_with_canvas().xform(point)
+			assert_true(overlay._is_mouse_over_canvas(), "Inside %s at scale %s" % [point, scale])
+		for point in [Vector2(-1, 200), Vector2(350, -1), Vector2(701, 200), Vector2(350, 401)]:
+			content.test_mouse = content.get_global_transform_with_canvas().xform(point)
+			assert_false(overlay._is_mouse_over_canvas(), "Outside %s at scale %s" % [point, scale])
+	var wheel = InputEventMouseButton.new()
+	wheel.button_index = BUTTON_WHEEL_UP
+	wheel.pressed = true
+	tool.active_angle = 0.0
+	overlay._input(wheel)
+	assert_eq(tool.active_angle, 0.0, "Wheel over UI must reach its control")
+	content.test_mouse = content.get_global_transform_with_canvas().xform(Vector2(350, 200))
+	overlay._input(wheel)
+	assert_eq(tool.active_angle, 1.0)
+	content.hide()
+	assert_false(overlay._is_mouse_over_canvas())
+	content.show()
+	var dialog = Control.new()
+	editor.add_child(dialog)
+	editor.Windows["Dialog"] = dialog
+	assert_false(overlay._is_mouse_over_canvas())
+	dialog.hide()
+	assert_true(overlay._is_mouse_over_canvas())
+	content.test_mouse = content.get_global_transform_with_canvas().xform(Vector2(-1, 200))
+	tool.cached_worldui = {"IsInsideBounds": true, "MousePosition": Vector2(30, 40)}
+	overlay._process(0.0)
+	assert_true(overlay._mouse_in_ui)
+	var click = InputEventMouseButton.new()
+	click.button_index = BUTTON_LEFT
+	click.pressed = true
+	overlay._input(click)
+	assert_eq(tool.markers.size(), 0, "UI click cannot place a marker")
+	var marker = add_shape()
+	tool.move_mode = true
+	tool._move_selected_marker = marker
+	tool._move_drag_pos = Vector2(20, 30)
+	click.pressed = false
+	overlay._input(click)
+	assert_null(tool._move_selected_marker, "Release outside canvas must finish the drag")
+	assert_eq(marker.position, Vector2(20, 30))
+	content.free()
+	assert_false(overlay._is_mouse_over_canvas(), "Missing host content disables mouse actions")
+
+
+func test_overlap_icons_share_cached_textures_but_keep_scale_variants():
+	make_panel()
+	var shape_row = tool.ui.get_control("ShapeModesRow")
+	var template_row = tool.ui.get_control("TemplateShapeModesRow")
+	# The row names are owned by the existing panel builder.
+	assert_not_null(shape_row)
+	assert_not_null(template_row)
+	if shape_row == null or template_row == null:
+		return
+	for index in range(6):
+		assert_not_null(shape_row.get_child(index).icon)
+		assert_eq(shape_row.get_child(index).icon, template_row.get_child(index).icon)
+	var full = tool.ui._load_icon("normal64.png", 1.0)
+	var half = tool.ui._load_icon("normal64.png", 0.5)
+	assert_ne(full, half)
+	assert_eq(full.get_width(), 64)
+	assert_eq(half.get_width(), 32)
+
+
+func test_real_panel_signals_edit_tool_parameters_and_restore_all_types():
+	make_panel()
+	tool.ui.get_control("AngleSpinBox").value = 37.0
+	tool.ui.get_control("MirrorCheckbox").pressed = true
+	assert_eq(tool.active_angle, 37.0)
+	assert_true(tool.active_mirror)
+	tool.ui.type_selector.emit_signal("item_selected", 1)
+	assert_eq(tool.active_marker_type, "Shape")
+	tool.ui.get_control("ShapeRadiusSpinBox").value = 3.0
+	tool.ui.get_control("ShapeAngleSpinBox").value = 27.0
+	tool.ui.get_control("ShapeSidesSpinBox").value = 5.0
+	assert_eq(tool.active_shape_radius, 3.0)
+	assert_eq(tool.active_shape_angle, 27.0)
+	assert_eq(tool.active_shape_sides, 5)
+	tool.ui.type_selector.emit_signal("item_selected", 2)
+	tool.ui.get_control("PathEndArrowCheckbox").pressed = true
+	tool.ui.get_control("PathArrowHeadLengthSpinBox").value = 25.0
+	tool.ui.get_control("PathArrowHeadAngleSpinBox").value = 20.0
+	assert_true(tool.active_path_end_arrow)
+	assert_eq(tool.active_arrow_head_length, 25.0)
+	assert_eq(tool.active_arrow_head_angle, 20.0)
+	tool.set_marker_type("Line")
+	assert_eq(tool.ui.get_control("AngleSpinBox").value, 37.0)
+	assert_true(tool.ui.get_control("MirrorCheckbox").pressed)
+	tool.set_marker_type("Shape")
+	assert_eq(tool.ui.get_control("ShapeRadiusSpinBox").value, 3.0)
+	assert_eq(tool.ui.get_control("ShapeAngleSpinBox").value, 27.0)
+	assert_eq(tool.ui.get_control("ShapeSidesSpinBox").value, 5.0)
+	tool.set_shape_preset("Square")
+	var preset = tool.ui.get_control("ShapeSubtypeSelector")
+	assert_eq(preset.get_item_metadata(preset.selected), "Square")
+	tool.ui.get_control("ShapeSizeModeOption").emit_signal("item_selected", 1)
+	assert_eq(tool.active_shape_size_mode, "side")
+	assert_almost_eq(tool.active_shape_side, 3.0 * sqrt(2.0), 0.00001)
+	tool.set_marker_type("Path")
+	assert_true(tool.ui.get_control("PathEndArrowCheckbox").pressed)
+	assert_eq(tool.ui.get_control("PathArrowHeadLengthSpinBox").value, 25.0)
+	assert_eq(tool.ui.get_control("PathArrowHeadAngleSpinBox").value, 20.0)
+
+
+func test_map_reference_refresh_releases_replaced_and_freed_overlays():
+	var old_parent = Node2D.new()
+	var new_parent = Node2D.new()
+	owned_nodes.append(old_parent)
+	owned_nodes.append(new_parent)
+	mod.Global["World"] = tool.cached_world
+	mod.Global["WorldUI"] = old_parent
+	mod.Global["Camera"] = null
+	tool.cached_worldui = old_parent
+	for property in ["cross_overlay", "perm_overlay"]:
+		var node = Node2D.new()
+		old_parent.add_child(node)
+		mod.set(property, node)
+	tool.overlay = Node2D.new()
+	old_parent.add_child(tool.overlay)
+	mod._refresh_map_references()
+	assert_eq(old_parent.get_child_count(), 3, "Keep overlays on unchanged map")
+	mod.Global.WorldUI = new_parent
+	mod._refresh_map_references()
+	assert_eq(old_parent.get_child_count(), 0)
+	assert_null(mod.cross_overlay)
+	assert_null(mod.perm_overlay)
+	assert_null(tool.overlay)
+	assert_eq(tool.cached_worldui, new_parent)
+	tool.overlay = Node2D.new()
+	tool.overlay.free()
+	mod._refresh_map_references()
+	assert_null(tool.overlay, "Clear freed object references")
+	mod.perm_overlay = Node2D.new()
+	new_parent.add_child(mod.perm_overlay)
+	mod.Global.World = {"WorldRect": Rect2(0, 0, 500, 500)}
+	mod._refresh_map_references()
+	assert_null(mod.perm_overlay, "Replacing World also invalidates overlays on the same WorldUI")
+	assert_eq(tool.cached_world, mod.Global.World)
+	mod.Global.World = null
+	mod.Global.WorldUI = null
+	mod.cross_show_v = true
+	mod._refresh_map_references()
+	assert_null(tool.cached_world)
+	assert_null(tool.cached_worldui)
+	assert_null(tool.cached_camera)
+	assert_false(mod.cross_show_v)
+	yield(get_tree(), "idle_frame")
+
+
 func make_panel():
 	var align = VBoxContainer.new()
 	add_child(align)
@@ -156,7 +432,7 @@ func test_panel_cache_replacement_and_overlap_buttons_stay_in_sync():
 	assert_eq(old_spin.max_value, 64.0)
 	assert_eq(old_spin.value, 64.0)
 	for mode in ["normal", "merge", "conforming", "wrapping", "difference", "cut"]:
-		tool.ui._on_shape_mode_button_pressed(mode)
+		tool.set_shape_mode(mode)
 		for row_name in ["ShapeModesRow", "TemplateShapeModesRow"]:
 			var row = tool.ui.get_control(row_name)
 			var pressed = 0
@@ -374,7 +650,7 @@ func test_shape_and_template_nonplacing_modes_produce_equivalent_geometry():
 		"shape_sides": 4, "shape_angle": 45.0, "color": Color.blue}}]
 	tool.active_template_index = 0
 	for mode in ["normal", "difference", "cut", "merge", "conforming", "wrapping"]:
-		tool.ui._on_shape_mode_button_pressed(mode)
+		tool.set_shape_mode(mode)
 		var results = []
 		for use_template in [false, true]:
 			tool.markers.clear()

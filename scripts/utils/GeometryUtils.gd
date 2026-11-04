@@ -247,8 +247,20 @@ static func clip_primitives_against_shapes(primitives: Array, shapes: Array) -> 
 		return primitives
 	return _clip_segments(primitives, shapes, false)
 
+## Conservative bounds include the endpoint tolerance used by segment intersections.
+static func polygon_intersection_bounds(points: Array) -> Rect2:
+	if points.empty():
+		return Rect2()
+	var bounds = Rect2(points[0], Vector2.ZERO)
+	for point in points:
+		bounds = bounds.expand(point)
+	return bounds.grow(max(bounds.size.x, bounds.size.y) * 1e-6 + 0.001)
+
 static func _clip_segments(primitives: Array, shapes: Array, keep_inside: bool) -> Array:
 	var result = []
+	var shape_bounds = []
+	for shape in shapes:
+		shape_bounds.append(polygon_intersection_bounds(shape.points) if shape.shape_type == "poly" else Rect2())
 	for prim in primitives:
 		if prim.type == "seg":
 			var a = prim.a
@@ -257,8 +269,13 @@ static func _clip_segments(primitives: Array, shapes: Array, keep_inside: bool) 
 			var edge_len_sq = edge.length_squared()
 			if edge_len_sq < 1e-10:
 				continue
+			var bounds = polygon_intersection_bounds([a, b])
+			var nearby_shapes = []
+			for i in range(shapes.size()):
+				if bounds.intersects(shape_bounds[i], true):
+					nearby_shapes.append(shapes[i])
 			var ts = [0.0, 1.0]
-			for shape in shapes:
+			for shape in nearby_shapes:
 				if shape.shape_type == "poly":
 					var pts = shape.points
 					var m = pts.size()
@@ -272,7 +289,7 @@ static func _clip_segments(primitives: Array, shapes: Array, keep_inside: bool) 
 					continue
 				var mid = a + edge * ((ts[k] + ts[k + 1]) * 0.5)
 				var outside = true
-				for shape in shapes:
+				for shape in nearby_shapes:
 					if shape.shape_type == "poly" and Geometry.is_point_in_polygon(mid, shape.points):
 						outside = false
 						break
@@ -282,6 +299,8 @@ static func _clip_segments(primitives: Array, shapes: Array, keep_inside: bool) 
 
 static func merge_polygons_outline(pts_a: Array, pts_b: Array) -> Array:
 	if pts_a.empty() or pts_b.empty():
+		return []
+	if not polygon_intersection_bounds(pts_a).intersects(polygon_intersection_bounds(pts_b), true):
 		return []
 
 	var shape_a = {"shape_type": "poly", "points": pts_a}

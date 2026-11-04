@@ -1,19 +1,14 @@
 extends Reference
 
-const GeometryUtils = preload("../utils/GeometryUtils.gd")
-
 # GuidesLinesToolUI - UI panel creation, callbacks, and widget helpers for GuidesLinesTool.
 # Holds all UI node references and handles user input from the tool panel.
-# Accesses and mutates tool state exclusively through the `tool` reference.
+# Parameter controls call tool actions; this class synchronizes their presentation.
 
 const CLASS_NAME = "GuidesLinesToolUI"
 
 
-# Default values used for type-switching fallbacks
-const DEFAULT_ARROW_HEAD_LENGTH = 50.0
-const DEFAULT_ARROW_HEAD_ANGLE = 30.0
-
 var _controls = {}
+var _icon_cache = {}
 
 var tool = null  # Reference to GuidesLinesTool
 
@@ -224,29 +219,15 @@ func _create_line_settings_ui():
 	for i in range(quick_angles.size()):
 		var btn = Button.new()
 		btn.text = angle_names[i]
-		btn.connect("pressed", self, "_on_quick_angle_pressed", [quick_angles[i]])
+		btn.connect("pressed", tool, "set_angle", [quick_angles[i]])
 		quick_grid.add_child(btn)
 
 	container.add_child(quick_grid)
 	container.add_child(_create_spacer(10))
 
 	# Angle SpinBox
-	var angle_hbox = HBoxContainer.new()
-	var angle_label = Label.new()
-	angle_label.text = "Angle (°):"
-	angle_label.rect_min_size = Vector2(80, 0)
-	angle_hbox.add_child(angle_label)
-
-	var angle_spin = SpinBox.new()
-	angle_spin.min_value = 0
-	angle_spin.max_value = 360
-	angle_spin.step = 1
-	angle_spin.value = tool.active_angle
-	angle_spin.name = "AngleSpinBox"
-	_controls["AngleSpinBox"] = angle_spin
-	angle_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	angle_spin.connect("value_changed", self, "_on_angle_changed")
-	angle_hbox.add_child(angle_spin)
+	var angle_hbox = _create_spinbox_row("Angle (°):", "AngleSpinBox",
+		0, 360, 1, tool.active_angle, tool, "set_angle", false)
 	container.add_child(angle_hbox)
 
 	# Mirror CheckBox
@@ -255,7 +236,7 @@ func _create_line_settings_ui():
 	mirror_check.pressed = tool.active_mirror
 	mirror_check.name = "MirrorCheckbox"
 	_controls["MirrorCheckbox"] = mirror_check
-	mirror_check.connect("toggled", self, "_on_mirror_toggled")
+	mirror_check.connect("toggled", tool, "set_mirror")
 	container.add_child(mirror_check)
 
 	# Show Coordinates CheckBox (Line-only)
@@ -329,50 +310,18 @@ func _create_shape_settings_ui():
 	container.add_child(_create_spacer(5))
 
 	# Radius SpinBox
-	var radius_hbox = HBoxContainer.new()
+	var radius_hbox = _create_spinbox_row("Radius:", "ShapeRadiusSpinBox",
+		0.1, 100, 0.1, tool.active_shape_radius, tool, "set_shape_radius", true)
 	radius_hbox.name = "RadiusRow"
 	_controls["RadiusRow"] = radius_hbox
-	var radius_label = Label.new()
-	radius_label.text = "Radius:"
-	radius_label.rect_min_size = Vector2(80, 0)
-	radius_hbox.add_child(radius_label)
-
-	var radius_spin = SpinBox.new()
-	radius_spin.min_value = 0.1  # Minimum 0.1 cell
-	radius_spin.max_value = 100
-	radius_spin.step = 0.1
-	radius_spin.value = tool.active_shape_radius
-	radius_spin.name = "ShapeRadiusSpinBox"
-	_controls["ShapeRadiusSpinBox"] = radius_spin
-	radius_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	radius_spin.connect("value_changed", self, "_on_shape_radius_changed")
-	radius_spin.allow_greater = true
-	radius_spin.allow_lesser = false
-	radius_hbox.add_child(radius_spin)
 	radius_hbox.hint_tooltip = "Radius in grid cells (circumradius — distance from center to vertex)"
 	container.add_child(radius_hbox)
 
 	# Side SpinBox (shown only when Size mode = Side)
-	var side_hbox = HBoxContainer.new()
+	var side_hbox = _create_spinbox_row("Side:", "ShapeSideSpinBox",
+		0.1, 100, 0.1, tool.active_shape_side, tool, "set_shape_side", true)
 	side_hbox.name = "SideRow"
 	_controls["SideRow"] = side_hbox
-	var side_label = Label.new()
-	side_label.text = "Side:"
-	side_label.rect_min_size = Vector2(80, 0)
-	side_hbox.add_child(side_label)
-
-	var side_spin = SpinBox.new()
-	side_spin.min_value = 0.1
-	side_spin.max_value = 100
-	side_spin.step = 0.1
-	side_spin.value = tool.active_shape_side
-	side_spin.name = "ShapeSideSpinBox"
-	_controls["ShapeSideSpinBox"] = side_spin
-	side_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	side_spin.connect("value_changed", self, "_on_shape_side_changed")
-	side_spin.allow_greater = true
-	side_spin.allow_lesser = false
-	side_hbox.add_child(side_spin)
 	side_hbox.hint_tooltip = "Side length in grid cells — the shape is sized so its edges equal this value"
 	side_hbox.visible = false
 	container.add_child(side_hbox)
@@ -380,47 +329,17 @@ func _create_shape_settings_ui():
 	container.add_child(_create_spacer(5))
 
 	# Angle SpinBox
-	var angle_hbox = HBoxContainer.new()
-	var angle_label = Label.new()
-	angle_label.text = "Angle (°):"
-	angle_label.rect_min_size = Vector2(80, 0)
-	angle_hbox.add_child(angle_label)
-
-	var angle_spin = SpinBox.new()
-	angle_spin.min_value = 0
-	angle_spin.max_value = 360
-	angle_spin.step = 1
-	angle_spin.value = tool.active_shape_angle
-	angle_spin.name = "ShapeAngleSpinBox"
-	_controls["ShapeAngleSpinBox"] = angle_spin
-	angle_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	angle_spin.connect("value_changed", self, "_on_shape_angle_changed")
-	angle_hbox.add_child(angle_spin)
+	var angle_hbox = _create_spinbox_row("Angle (°):", "ShapeAngleSpinBox",
+		0, 360, 1, tool.active_shape_angle, tool, "set_shape_angle", false)
 	container.add_child(angle_hbox)
 
 	container.add_child(_create_spacer(5))
 
 	# Sides SpinBox (only visible for Custom subtype)
-	var sides_hbox = HBoxContainer.new()
+	var sides_hbox = _create_spinbox_row("Sides:", "ShapeSidesSpinBox",
+		3, 64, 1, tool.active_shape_sides, tool, "set_shape_sides", false)
 	sides_hbox.name = "SidesRow"
 	_controls["SidesRow"] = sides_hbox
-	var sides_label = Label.new()
-	sides_label.text = "Sides:"
-	sides_label.rect_min_size = Vector2(80, 0)
-	sides_hbox.add_child(sides_label)
-
-	var sides_spin = SpinBox.new()
-	sides_spin.min_value = 3
-	sides_spin.max_value = 64
-	sides_spin.step = 1
-	sides_spin.value = tool.active_shape_sides
-	sides_spin.name = "ShapeSidesSpinBox"
-	_controls["ShapeSidesSpinBox"] = sides_spin
-	sides_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	sides_spin.connect("value_changed", self, "_on_shape_sides_changed")
-	sides_spin.allow_greater = false
-	sides_spin.allow_lesser = false
-	sides_hbox.add_child(sides_spin)
 	container.add_child(sides_hbox)
 
 	# Only show sides row for Custom subtype (hidden by default)
@@ -477,7 +396,7 @@ func _create_path_settings_ui():
 	end_arrow_check.pressed = tool.active_path_end_arrow
 	end_arrow_check.name = "PathEndArrowCheckbox"
 	_controls["PathEndArrowCheckbox"] = end_arrow_check
-	end_arrow_check.connect("toggled", self, "_on_path_end_arrow_toggled")
+	end_arrow_check.connect("toggled", tool, "set_path_end_arrow")
 	container.add_child(end_arrow_check)
 
 	# Arrow head settings container (only visible when checkbox is active)
@@ -487,45 +406,15 @@ func _create_path_settings_ui():
 	arrow_settings.visible = tool.active_path_end_arrow
 
 	# Head Length SpinBox
-	var head_length_hbox = HBoxContainer.new()
-	var head_length_label = Label.new()
-	head_length_label.text = "Head Length:"
-	head_length_label.rect_min_size = Vector2(80, 0)
-	head_length_hbox.add_child(head_length_label)
-
-	var head_length_spin = SpinBox.new()
-	head_length_spin.min_value = 10.0
-	head_length_spin.max_value = 200.0
-	head_length_spin.step = 5.0
-	head_length_spin.value = tool.active_arrow_head_length
-	head_length_spin.name = "PathArrowHeadLengthSpinBox"
-	_controls["PathArrowHeadLengthSpinBox"] = head_length_spin
-	head_length_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	head_length_spin.connect("value_changed", self, "_on_path_arrow_head_length_changed")
-	head_length_spin.allow_greater = true
-	head_length_spin.allow_lesser = false
-	head_length_hbox.add_child(head_length_spin)
+	var head_length_hbox = _create_spinbox_row("Head Length:", "PathArrowHeadLengthSpinBox",
+		10.0, 200.0, 5.0, tool.active_arrow_head_length, tool, "set_path_arrow_head_length", true)
 	arrow_settings.add_child(head_length_hbox)
 
 	arrow_settings.add_child(_create_spacer(5))
 
 	# Head Angle SpinBox
-	var head_angle_hbox = HBoxContainer.new()
-	var head_angle_label = Label.new()
-	head_angle_label.text = "Head Angle:"
-	head_angle_label.rect_min_size = Vector2(80, 0)
-	head_angle_hbox.add_child(head_angle_label)
-
-	var head_angle_spin = SpinBox.new()
-	head_angle_spin.min_value = 10.0
-	head_angle_spin.max_value = 60.0
-	head_angle_spin.step = 5.0
-	head_angle_spin.value = tool.active_arrow_head_angle
-	head_angle_spin.name = "PathArrowHeadAngleSpinBox"
-	_controls["PathArrowHeadAngleSpinBox"] = head_angle_spin
-	head_angle_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	head_angle_spin.connect("value_changed", self, "_on_path_arrow_head_angle_changed")
-	head_angle_hbox.add_child(head_angle_spin)
+	var head_angle_hbox = _create_spinbox_row("Head Angle:", "PathArrowHeadAngleSpinBox",
+		10.0, 60.0, 5.0, tool.active_arrow_head_angle, tool, "set_path_arrow_head_angle", false)
 	arrow_settings.add_child(head_angle_hbox)
 
 	container.add_child(arrow_settings)
@@ -683,7 +572,7 @@ func _create_common_settings_ui():
 	color_picker.name = "ColorPicker"
 	_controls["ColorPicker"] = color_picker
 	color_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	color_picker.connect("color_changed", self, "_on_color_changed")
+	color_picker.connect("color_changed", tool, "set_color")
 	color_hbox.add_child(color_picker)
 	container.add_child(color_hbox)
 
@@ -707,25 +596,30 @@ func _create_common_settings_ui():
 	container.add_child(visible_check)
 
 	# Opacity row
-	var opacity_hbox = HBoxContainer.new()
-	var opacity_label = Label.new()
-	opacity_label.text = "Opacity (%):"
-	opacity_label.rect_min_size = Vector2(80, 0)
-	opacity_hbox.add_child(opacity_label)
-
-	var opacity_spin = SpinBox.new()
-	opacity_spin.min_value = 0
-	opacity_spin.max_value = 100
-	opacity_spin.step = 5
-	opacity_spin.value = tool.parent_mod.markers_opacity * 100.0
-	opacity_spin.name = "MarkersOpacitySpinBox"
-	_controls["MarkersOpacitySpinBox"] = opacity_spin
-	opacity_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	opacity_spin.connect("value_changed", self, "_on_markers_opacity_changed")
-	opacity_hbox.add_child(opacity_spin)
+	var opacity_hbox = _create_spinbox_row("Opacity (%):", "MarkersOpacitySpinBox",
+		0, 100, 5, tool.parent_mod.markers_opacity * 100.0, self, "_on_markers_opacity_changed", false)
 	container.add_child(opacity_hbox)
 
 	return container
+
+func _create_spinbox_row(label_text, control_name, minimum, maximum, step, value, target, method, allow_greater = false):
+	var row = HBoxContainer.new()
+	var label = Label.new()
+	label.text = label_text
+	label.rect_min_size = Vector2(80, 0)
+	row.add_child(label)
+	var spin = SpinBox.new()
+	spin.name = control_name
+	spin.min_value = minimum
+	spin.max_value = maximum
+	spin.step = step
+	spin.value = value
+	spin.allow_greater = allow_greater
+	spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	spin.connect("value_changed", target, method)
+	_controls[control_name] = spin
+	row.add_child(spin)
+	return row
 
 func _create_spacer(height):
 	var spacer = Control.new()
@@ -736,38 +630,11 @@ func _create_spacer(height):
 # UI CALLBACKS — LINE SETTINGS
 # ============================================================================
 
-func _on_quick_angle_pressed(angle_value):
-	tool.active_angle = angle_value
-	_update_angle_spinbox()
-	if tool.LOGGER:
-		tool.LOGGER.debug("Quick angle set to: %.1f°" % [angle_value])
-
-func _on_angle_changed(value):
-	tool.active_angle = value
-	if tool.overlay:
-		tool.overlay.update()
-	if tool.LOGGER:
-		tool.LOGGER.debug("Angle changed to: %.1f°" % [value])
-
-func _on_color_changed(new_color):
-	tool.active_color = new_color
-	if tool.overlay:
-		tool.overlay.update()
-	if tool.LOGGER:
-		tool.LOGGER.debug("Color changed to: %s" % [new_color.to_html()])
-
 func _on_markers_visible_toggled(enabled):
 	tool.parent_mod._on_markers_visible_toggled(enabled)
 
 func _on_markers_opacity_changed(value):
 	tool.parent_mod._on_markers_opacity_changed(value / 100.0)
-
-func _on_mirror_toggled(enabled):
-	tool.active_mirror = enabled
-	if tool.overlay:
-		tool.overlay.update()
-	if tool.LOGGER:
-		tool.LOGGER.debug("Mirror toggled: %s" % [str(enabled)])
 
 # ============================================================================
 # UI CALLBACKS — FILL MODE
@@ -780,237 +647,13 @@ func _on_delete_all_fills() -> void:
 # UI CALLBACKS — SHAPE SETTINGS
 # ============================================================================
 
-# UI callback for shape preset selector.
-# Selecting a preset sets the canonical starting sides and angle for that shape;
-# subtype is no longer stored on the marker — only sides/angle matter.
-func _on_shape_subtype_changed(subtype_index):
-	if not type_selector:
-		return
-
-	var subtype_selector = get_control("ShapeSubtypeSelector")
-	if subtype_selector:
-		var preset = subtype_selector.get_item_metadata(subtype_index)
-
-		# Apply canonical defaults for the selected preset
-		match preset:
-			tool.SHAPE_CIRCLE:
-				tool.active_shape_sides = 64
-				tool.active_shape_angle = 0.0
-			tool.SHAPE_SQUARE:
-				tool.active_shape_sides = 4
-				tool.active_shape_angle = 45.0
-			tool.SHAPE_PENTAGON:
-				tool.active_shape_sides = 5
-				tool.active_shape_angle = -90.0
-			tool.SHAPE_HEXAGON:
-				tool.active_shape_sides = 6
-				tool.active_shape_angle = 0.0
-			tool.SHAPE_OCTAGON:
-				tool.active_shape_sides = 8
-				tool.active_shape_angle = 0.0
-			tool.SHAPE_CUSTOM:
-				tool.active_shape_angle = 0.0
-
-		tool.type_settings[tool.MARKER_TYPE_SHAPE]["angle"] = tool.active_shape_angle
-		tool.type_settings[tool.MARKER_TYPE_SHAPE]["sides"] = tool.active_shape_sides
-
-		# Show/hide sides spinbox — visible only for Custom
-		var sides_row = get_control("SidesRow")
-		if sides_row:
-			sides_row.visible = (preset == tool.SHAPE_CUSTOM)
-
-		# Circle has no meaningful side — force radius mode and hide the size toggle
-		var is_circle = (preset == tool.SHAPE_CIRCLE)
-		if is_circle and tool.active_shape_size_mode == "side":
-			tool.active_shape_size_mode = "radius"
-			tool.type_settings[tool.MARKER_TYPE_SHAPE]["size_mode"] = "radius"
-		_update_shape_size_mode_ui()
-
-		# In side mode with a non-circle preset, keep the user's side value and
-		# recompute the circumradius for the new number of sides.
-		if tool.active_shape_size_mode == "side" and not is_circle:
-			tool.recompute_radius_from_side()
-			_update_shape_radius_spinbox()
-
-		_update_shape_angle_spinbox()
-		_update_shape_sides_spinbox()
-
-		if tool.overlay:
-			tool.overlay.update()
-
-		if tool.LOGGER:
-			tool.LOGGER.info("Shape preset changed to: %s (sides=%d, angle=%.1f)" % [preset, tool.active_shape_sides, tool.active_shape_angle])
-
-func _on_shape_radius_changed(value):
-	if value < 0.1:
-		value = 0.1
-	tool.active_shape_radius = value
-	_update_shape_radius_spinbox()
-	if tool.overlay:
-		tool.overlay.update()
-	if tool.LOGGER:
-		tool.LOGGER.debug("Shape radius changed to: %.1f cells" % [value])
-
-func _on_shape_angle_changed(value):
-	tool.active_shape_angle = value
-	if tool.overlay:
-		tool.overlay.update()
-	if tool.LOGGER:
-		tool.LOGGER.debug("Shape angle changed to: %.1f°" % [value])
-
-func _on_shape_sides_changed(value):
-	tool.active_shape_sides = int(value)
-	tool.type_settings[tool.MARKER_TYPE_SHAPE]["sides"] = tool.active_shape_sides
-	# In side mode, recompute circumradius from the kept side value with the new sides count
-	if tool.active_shape_size_mode == "side":
-		tool.recompute_radius_from_side()
-		_update_shape_radius_spinbox()
-	if tool.overlay:
-		tool.overlay.update()
-	if tool.LOGGER:
-		tool.LOGGER.debug("Shape sides changed to: %d" % [tool.active_shape_sides])
-
-# Called when the user toggles between Radius and Side size mode
-func _on_shape_size_mode_changed(mode_index):
-	if not shape_settings_container:
-		return
-	var size_mode_option = get_control("ShapeSizeModeOption")
-	if not size_mode_option:
-		return
-	var mode = size_mode_option.get_item_metadata(mode_index)
-	tool.active_shape_size_mode = mode
-	tool.type_settings[tool.MARKER_TYPE_SHAPE]["size_mode"] = mode
-	if mode == "side":
-		# Compute equivalent side from the current circumradius
-		var computed_side = GeometryUtils.circumradius_to_side(tool.active_shape_radius / tool._get_hex_edge_correction(), tool.active_shape_sides)
-		if computed_side < 0.1:
-			computed_side = 0.1
-		tool.active_shape_side = computed_side
-		tool.type_settings[tool.MARKER_TYPE_SHAPE]["side"] = computed_side
-		_update_shape_side_spinbox()
-	_update_shape_size_mode_ui()
-	if tool.overlay:
-		tool.overlay.update()
-	if tool.LOGGER:
-		tool.LOGGER.debug("Shape size mode changed to: %s" % [mode])
-
-# Called when the user edits the Side spinbox directly
-func _on_shape_side_changed(value):
-	if value < 0.1:
-		value = 0.1
-	tool.active_shape_side = value
-	tool.type_settings[tool.MARKER_TYPE_SHAPE]["side"] = value
-	_update_shape_side_spinbox()
-	var new_radius = tool.recompute_radius_from_side()
-	_update_shape_radius_spinbox()
-	if tool.overlay:
-		tool.overlay.update()
-	if tool.LOGGER:
-		tool.LOGGER.debug("Shape side changed to: %.2f cells (radius=%.3f)" % [value, new_radius])
-
-# Unified callback for shape interaction mode button presses
-func _on_shape_mode_button_pressed(mode: String):
-	# Set all modes to false first
-	tool.merge_shapes = false
-	tool.conforming_mode = false
-	tool.wrapping_mode = false
-	tool.difference_mode = false
-	tool.cut_mode = false
-
-	# Activate the selected mode (normal means all stay false)
-	match mode:
-		"merge":
-			tool.merge_shapes = true
-		"conforming":
-			tool.conforming_mode = true
-		"wrapping":
-			tool.wrapping_mode = true
-		"difference":
-			tool.difference_mode = true
-		"cut":
-			tool.cut_mode = true
-		"normal":
-			pass  # All modes already false
-
-	# Update button pressed states
-	_update_shape_mode_buttons(mode)
-	_sync_template_overlap_mode_buttons()
-
-	if tool.LOGGER:
-		tool.LOGGER.info("Shape interaction mode changed to: %s" % [mode])
-
 # Helper to update the pressed state of all shape mode buttons
 func _update_shape_mode_buttons(active_mode: String):
 	_sync_overlap_buttons(get_control("ShapeModesRow"), active_mode)
 
-func _on_path_end_arrow_toggled(enabled):
-	tool.active_path_end_arrow = enabled
-	tool.type_settings[tool.MARKER_TYPE_PATH]["end_arrow"] = enabled
-	# Show/hide arrow head settings
-	if path_settings_container:
-		var arrow_settings = get_control("PathArrowSettings")
-		if arrow_settings:
-			arrow_settings.visible = enabled
-	if tool.overlay:
-		tool.overlay.update()
-	if tool.LOGGER:
-		tool.LOGGER.debug("Path end_arrow toggled: %s" % [str(enabled)])
-
-func _on_path_arrow_head_length_changed(value):
-	if value < 10.0:
-		value = 10.0
-	tool.active_arrow_head_length = value
-	tool.type_settings[tool.MARKER_TYPE_PATH]["head_length"] = value
-	_update_path_arrow_head_length_spinbox()
-	if tool.overlay:
-		tool.overlay.update()
-	if tool.LOGGER:
-		tool.LOGGER.debug("Path arrow head length changed to: %.1f px" % [value])
-
-func _on_path_arrow_head_angle_changed(value):
-	tool.active_arrow_head_angle = value
-	tool.type_settings[tool.MARKER_TYPE_PATH]["head_angle"] = value
-	if tool.overlay:
-		tool.overlay.update()
-	if tool.LOGGER:
-		tool.LOGGER.debug("Path arrow head angle changed to: %.1f°" % [value])
-
 # ============================================================================
 # MARKER TYPE SWITCHING
 # ============================================================================
-
-# Handle marker type selection change
-func _on_marker_type_changed(type_index):
-	var selected_type = type_selector.get_item_metadata(type_index)
-
-	# Save current type settings before switching (not applicable for Fill/Template)
-	if tool.active_marker_type != tool.MARKER_TYPE_FILL and tool.active_marker_type != tool.MARKER_TYPE_TEMPLATE:
-		_save_current_type_settings()
-
-	# Cancel path placement if switching away from Path
-	if tool.active_marker_type == tool.MARKER_TYPE_PATH and selected_type != tool.MARKER_TYPE_PATH:
-		tool._cancel_path_placement()
-
-	# Cancel template capture if switching away from Template
-	if tool.active_marker_type == tool.MARKER_TYPE_TEMPLATE and selected_type != tool.MARKER_TYPE_TEMPLATE:
-		tool.template_capture_mode = false
-		_update_template_capture_button(false)
-
-	# Switch to new type
-	tool.active_marker_type = selected_type
-
-	# Load settings for new type (not applicable for Fill/Template)
-	if selected_type != tool.MARKER_TYPE_FILL and selected_type != tool.MARKER_TYPE_TEMPLATE:
-		_load_type_settings(selected_type)
-
-	# Switch visible UI container
-	_switch_type_ui(selected_type)
-
-	if tool.overlay:
-		tool.overlay.update()
-
-	if tool.LOGGER:
-		tool.LOGGER.debug("Marker type changed to: %s" % [selected_type])
 
 # Sync the type_selector dropdown to match tool.active_marker_type.
 # Called by the tool when it changes active_marker_type externally
@@ -1047,159 +690,6 @@ func _switch_type_ui(marker_type):
 		tool.MARKER_TYPE_TEMPLATE:
 			if template_settings_container:
 				template_settings_container.visible = true
-
-# Load settings for specific marker type
-func _load_type_settings(marker_type):
-	if not tool.type_settings.has(marker_type):
-		return
-
-	var settings = tool.type_settings[marker_type]
-
-	if marker_type == tool.MARKER_TYPE_LINE:
-		tool.active_angle = settings["angle"]
-		tool.active_mirror = settings["mirror"]
-		_update_angle_spinbox()
-		_update_mirror_checkbox()
-
-	elif marker_type == tool.MARKER_TYPE_SHAPE:
-		tool.active_shape_radius = settings["radius"]
-		tool.active_shape_angle = settings.get("angle", 0.0)
-		tool.active_shape_sides = settings.get("sides", tool.DEFAULT_SHAPE_SIDES)
-		tool.active_shape_size_mode = settings.get("size_mode", "radius")
-		tool.active_shape_side = settings.get("side", 1.0)
-		_update_shape_radius_spinbox()
-		_update_shape_angle_spinbox()
-		_update_shape_sides_spinbox()
-		_update_shape_side_spinbox()
-		_update_shape_size_mode_ui()
-
-	elif marker_type == tool.MARKER_TYPE_PATH:
-		tool.active_path_end_arrow = settings.get("end_arrow", false)
-		tool.active_arrow_head_length = settings.get("head_length", DEFAULT_ARROW_HEAD_LENGTH)
-		tool.active_arrow_head_angle = settings.get("head_angle", DEFAULT_ARROW_HEAD_ANGLE)
-		_update_path_end_arrow_checkbox()
-		_update_path_arrow_head_length_spinbox()
-		_update_path_arrow_head_angle_spinbox()
-
-# Save current type settings before switching
-func _save_current_type_settings():
-	if not tool.type_settings.has(tool.active_marker_type):
-		tool.type_settings[tool.active_marker_type] = {}
-
-	if tool.active_marker_type == tool.MARKER_TYPE_LINE:
-		tool.type_settings[tool.MARKER_TYPE_LINE]["angle"] = tool.active_angle
-		tool.type_settings[tool.MARKER_TYPE_LINE]["mirror"] = tool.active_mirror
-
-	elif tool.active_marker_type == tool.MARKER_TYPE_SHAPE:
-		tool.type_settings[tool.MARKER_TYPE_SHAPE]["radius"] = tool.active_shape_radius
-		tool.type_settings[tool.MARKER_TYPE_SHAPE]["angle"] = tool.active_shape_angle
-		tool.type_settings[tool.MARKER_TYPE_SHAPE]["sides"] = tool.active_shape_sides
-		tool.type_settings[tool.MARKER_TYPE_SHAPE]["size_mode"] = tool.active_shape_size_mode
-		tool.type_settings[tool.MARKER_TYPE_SHAPE]["side"] = tool.active_shape_side
-
-	elif tool.active_marker_type == tool.MARKER_TYPE_PATH:
-		tool.type_settings[tool.MARKER_TYPE_PATH]["end_arrow"] = tool.active_path_end_arrow
-		tool.type_settings[tool.MARKER_TYPE_PATH]["head_length"] = tool.active_arrow_head_length
-		tool.type_settings[tool.MARKER_TYPE_PATH]["head_angle"] = tool.active_arrow_head_angle
-
-# ============================================================================
-# MOUSE WHEEL PARAMETER ADJUSTMENT
-# ============================================================================
-
-# Adjust angle using mouse wheel (only for Line type)
-# direction: 1 for wheel up (increase), -1 for wheel down (decrease)
-func adjust_angle_with_wheel(direction):
-	if tool.active_marker_type != tool.MARKER_TYPE_LINE:
-		return
-
-	var angle_step = 1.0
-	var new_angle = tool.active_angle + (direction * angle_step)
-
-	if new_angle < 0:
-		new_angle += 360
-	elif new_angle >= 360:
-		new_angle -= 360
-
-	tool.active_angle = new_angle
-	tool.type_settings[tool.MARKER_TYPE_LINE]["angle"] = tool.active_angle
-	_update_angle_spinbox()
-
-	if tool.overlay:
-		tool.overlay.update()
-
-	if tool.LOGGER:
-		tool.LOGGER.debug("Angle adjusted via mouse wheel: %.1f°" % [tool.active_angle])
-
-# Adjust shape radius using mouse wheel (only for Shape type)
-# direction: 1 for wheel up (increase), -1 for wheel down (decrease)
-func adjust_shape_radius_with_wheel(direction):
-	if tool.active_marker_type != tool.MARKER_TYPE_SHAPE:
-		return
-
-	if tool.active_shape_size_mode == "side":
-		var side_step = 0.1
-		var new_side = tool.active_shape_side + (direction * side_step)
-		if new_side < 0.1:
-			new_side = 0.1
-		tool.active_shape_side = new_side
-		tool.type_settings[tool.MARKER_TYPE_SHAPE]["side"] = new_side
-		_update_shape_side_spinbox()
-		var new_radius = tool.recompute_radius_from_side()
-		_update_shape_radius_spinbox()
-		if tool.overlay:
-			tool.overlay.update()
-		if tool.LOGGER:
-			tool.LOGGER.debug("Shape side adjusted via mouse wheel: %.2f cells (radius=%.3f)" % [new_side, new_radius])
-	else:
-		var radius_step = 0.1
-		var new_radius = tool.active_shape_radius + (direction * radius_step)
-		if new_radius < 0.1:
-			new_radius = 0.1
-		tool.active_shape_radius = new_radius
-		tool.type_settings[tool.MARKER_TYPE_SHAPE]["radius"] = tool.active_shape_radius
-		_update_shape_radius_spinbox()
-		if tool.overlay:
-			tool.overlay.update()
-		if tool.LOGGER:
-			tool.LOGGER.debug("Shape radius adjusted via mouse wheel: %.1f cells" % [tool.active_shape_radius])
-
-# Adjust shape angle using mouse wheel (only for Shape type)
-# direction: 1 for wheel up (increase), -1 for wheel down (decrease)
-func adjust_shape_angle_with_wheel(direction):
-	if tool.active_marker_type != tool.MARKER_TYPE_SHAPE:
-		return
-
-	var angle_step = 5.0
-	var new_angle = fmod(tool.active_shape_angle + (direction * angle_step), 360.0)
-	if new_angle < 0:
-		new_angle += 360.0
-
-	tool.active_shape_angle = new_angle
-	tool.type_settings[tool.MARKER_TYPE_SHAPE]["angle"] = tool.active_shape_angle
-	_update_shape_angle_spinbox()
-
-	if tool.overlay:
-		tool.overlay.update()
-
-	if tool.LOGGER:
-		tool.LOGGER.debug("Shape angle adjusted via mouse wheel: %.1f°" % [tool.active_shape_angle])
-
-# Rotate shape by 45 degrees via RMB shortcut
-func rotate_shape_45():
-	if tool.active_marker_type != tool.MARKER_TYPE_SHAPE:
-		return
-
-	var new_angle = fmod(tool.active_shape_angle + 45.0, 360.0)
-
-	tool.active_shape_angle = new_angle
-	tool.type_settings[tool.MARKER_TYPE_SHAPE]["angle"] = tool.active_shape_angle
-	_update_shape_angle_spinbox()
-
-	if tool.overlay:
-		tool.overlay.update()
-
-	if tool.LOGGER:
-		tool.LOGGER.debug("Shape rotated 45° via RMB: %.1f°" % [tool.active_shape_angle])
 
 # ============================================================================
 # WIDGET VALUE HELPERS
@@ -1277,6 +767,9 @@ func _update_path_arrow_head_angle_spinbox():
 # Load an optional icon from the mod root; return null if unavailable.
 func _load_icon(filename: String, scale: float = 1.0):
 	var path = tool.parent_mod.Global.Root + "icons/" + filename
+	var key = path + ":" + str(scale)
+	if _icon_cache.has(key):
+		return _icon_cache[key]
 	var image = Image.new()
 	if image.load(path) != OK:
 		return null
@@ -1290,6 +783,7 @@ func _load_icon(filename: String, scale: float = 1.0):
 	
 	var texture = ImageTexture.new()
 	texture.create_from_image(image, 0)
+	_icon_cache[key] = texture
 	return texture
 
 func get_control(control_name: String):
@@ -1329,7 +823,7 @@ func _create_overlap_modes_row(row_name: String, button_size: Vector2):
 		var icon = _load_icon(def[1], 0.5)
 		if icon:
 			btn.icon = icon
-		btn.connect("pressed", self, "_on_shape_mode_button_pressed", [mode_keys[i]])
+		btn.connect("pressed", tool, "set_shape_mode", [mode_keys[i]])
 		modes_hbox.add_child(btn)
 
 	_sync_overlap_buttons(modes_hbox, _active_overlap_mode())
@@ -1352,3 +846,44 @@ func _sync_overlap_buttons(row, active_mode: String) -> void:
 		button.set_block_signals(true)
 		button.pressed = modes[index] == active_mode
 		button.set_block_signals(false)
+
+func sync_type_settings_controls(marker_type):
+	if marker_type == tool.MARKER_TYPE_LINE:
+		_update_angle_spinbox()
+		_update_mirror_checkbox()
+
+	elif marker_type == tool.MARKER_TYPE_SHAPE:
+		_update_shape_radius_spinbox()
+		_update_shape_angle_spinbox()
+		_update_shape_sides_spinbox()
+		_update_shape_side_spinbox()
+		_update_shape_size_mode_ui()
+
+	elif marker_type == tool.MARKER_TYPE_PATH:
+		_update_path_end_arrow_checkbox()
+		_update_path_arrow_head_length_spinbox()
+		_update_path_arrow_head_angle_spinbox()
+
+func _on_marker_type_changed(type_index):
+	tool.set_marker_type(type_selector.get_item_metadata(type_index))
+
+func _on_shape_size_mode_changed(mode_index):
+	var option = get_control("ShapeSizeModeOption")
+	if option:
+		tool.set_shape_size_mode(option.get_item_metadata(mode_index))
+
+func _on_shape_subtype_changed(subtype_index):
+	var option = get_control("ShapeSubtypeSelector")
+	if option:
+		tool.set_shape_preset(option.get_item_metadata(subtype_index))
+
+func sync_shape_preset(preset):
+	var option = get_control("ShapeSubtypeSelector")
+	if option:
+		for index in range(option.get_item_count()):
+			if option.get_item_metadata(index) == preset:
+				_set_control_value("ShapeSubtypeSelector", index, "selected")
+				break
+	var sides_row = get_control("SidesRow")
+	if sides_row:
+		sides_row.visible = preset == tool.SHAPE_CUSTOM
