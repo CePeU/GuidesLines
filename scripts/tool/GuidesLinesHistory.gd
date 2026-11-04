@@ -19,11 +19,15 @@ class PlaceMarkerRecord:
 	var marker_data
 	# { marker_id: {"primitives": [...]} }
 	var clip_snapshots = {}
+	var conforming = false
+	var wrapping = false
 
 	func _init(tool_ref, data, p_clip_snapshots = {}):
 		tool = tool_ref
 		marker_data = data
 		clip_snapshots = p_clip_snapshots
+		conforming = tool.conforming_mode
+		wrapping = tool.wrapping_mode
 		if tool.LOGGER:
 			tool.LOGGER.debug("PlaceMarkerRecord created for id: %d" % [data["id"]])
 
@@ -31,9 +35,16 @@ class PlaceMarkerRecord:
 		if tool.LOGGER:
 			tool.LOGGER.debug("PlaceMarkerRecord.redo() called for id: %d" % [marker_data["id"]])
 		# Re-snapshot before redo so that the NEXT undo can restore correctly.
-		if tool.conforming_mode:
-			clip_snapshots = tool._snapshot_potential_clip_targets(marker_data["position"])
+		if conforming and marker_data["marker_type"] == tool.MARKER_TYPE_SHAPE:
+			clip_snapshots = tool._snapshot_potential_clip_targets_by_desc(
+				tool._get_shape_descriptor_from_marker_data(marker_data))
+		var prev_conforming = tool.conforming_mode
+		var prev_wrapping = tool.wrapping_mode
+		tool.conforming_mode = conforming
+		tool.wrapping_mode = wrapping
 		tool._do_place_marker(marker_data)
+		tool.conforming_mode = prev_conforming
+		tool.wrapping_mode = prev_wrapping
 
 	func undo():
 		if tool.LOGGER:
@@ -250,10 +261,8 @@ class MergeShapeRecord:
 			if snap == null:
 				continue
 			var marker = tool.GuideMarkerClass.new()
-			marker.id           = id
-			marker.marker_type  = tool.MARKER_TYPE_SHAPE
-			marker.position     = snap["position"]
-			marker.color        = snap.get("color", Color(0, 0.7, 1, 1))
+			marker.Load(snap["saved_marker"])
+			marker.color = snap["color"]
 			marker.update_opacity(tool._current_opacity())
 			marker.set_primitives(snap["primitives"].duplicate(true))
 			tool.markers.append(marker)

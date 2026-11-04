@@ -6,6 +6,7 @@ class_name GuidesLinesRender
 # CONSTANTS & STYLING
 # ============================================================================
 
+const OUTLINE_COLOR = Color(0, 0, 0, 0.8)
 const TEXT_SCALE = 4.0 # For high-res text scaling
 
 # ============================================================================
@@ -34,51 +35,17 @@ static func draw_adaptive_line(canvas: CanvasItem, start: Vector2, end: Vector2,
 
 # Draws text with a black outline
 static func draw_text_with_outline(canvas: CanvasItem, text: String, position: Vector2, color: Color, font: Font = null):
-	var outline_color = Color(0, 0, 0, 0.8)
-	var outline_offset = 2
-	
-	# Set transform for high-res text
+	if font == null:
+		return
 	canvas.draw_set_transform(position, 0, Vector2(TEXT_SCALE, TEXT_SCALE))
-	
-	# Draw outline (offset positions)
-	for dx in [-outline_offset, 0, outline_offset]:
-		for dy in [-outline_offset, 0, outline_offset]:
-			if dx != 0 or dy != 0:
-				# Use offset relative to scaled space, or separate draw calls
-				# The logic in PermanentOverlay was:
-				# draw_set_transform(position + Vector2(dx, dy), ...)
-				# This means the offset is in WORLD space before scaling? 
-				# No, let's look at PermanentOverlay code again: 
-				# draw_set_transform(position + Vector2(dx, dy), 0, Vector2(scale, scale))
-				# outline_offset was 2. So 2 units in world space.
-				
-				# However, shifting the transform repeatedly is expensive.
-				# A better approach if we are already scaled is to just draw with offset if possible?
-				# canvas.draw_string takes position.
-				
-				# Replicating PermanentOverlay logic exactly for now to be safe:
-				canvas.draw_set_transform(position + Vector2(dx, dy), 0, Vector2(TEXT_SCALE, TEXT_SCALE))
-				if font:
-					canvas.draw_string(font, Vector2.ZERO, text, outline_color, -1)
-				else:
-					# Fallback if no font provided (though usually required in Godot 3)
-					canvas.draw_string(null, Vector2.ZERO, text, outline_color, -1)
-	
-	# Draw main text
-	canvas.draw_set_transform(position, 0, Vector2(TEXT_SCALE, TEXT_SCALE))
-	if font:
-		canvas.draw_string(font, Vector2.ZERO, text, color, -1)
-	else:
-		canvas.draw_string(null, Vector2.ZERO, text, color, -1)
-	
-	# Reset transform
+	var offset_step = 2.0 / TEXT_SCALE
+	for dx in [-offset_step, 0.0, offset_step]:
+		for dy in [-offset_step, 0.0, offset_step]:
+			if dx != 0.0 or dy != 0.0:
+				canvas.draw_string(font, Vector2(dx, dy), text, OUTLINE_COLOR, -1)
+	canvas.draw_string(font, Vector2.ZERO, text, color, -1)
 	canvas.draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
 
-# ============================================================================
-# COMPLEX SHAPES
-# ============================================================================
-
-# Draws an arrow (line + head)
 static func draw_arrow(canvas: CanvasItem, start: Vector2, end: Vector2, head_points: Array, color: Color, width: float):
 	canvas.draw_line(start, end, color, width)
 	if head_points.size() >= 2:

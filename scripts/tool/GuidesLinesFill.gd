@@ -275,28 +275,6 @@ func _bridge_hole_into_polygon(outer_pts: Array, hole_pts: Array) -> Array:
 
 	return result
 
-## From [polys] (Array[PoolVector2Array]) returns the one that contains [pos].
-## Falls back to the largest polygon if none contains pos.
-func _pick_polygon_containing_point(polys: Array, pos: Vector2) -> PoolVector2Array:
-	for poly in polys:
-		if Geometry.is_point_in_polygon(pos, poly):
-			return poly
-	# Fallback — return the largest available polygon.
-	var best = PoolVector2Array()
-	var best_area = -1.0
-	for poly in polys:
-		var a = _polygon_area(Array(poly))
-		if a > best_area:
-			best_area = a
-			best = poly
-	return best
-
-# ============================================================================
-# GEOMETRY HELPERS
-# ============================================================================
-
-## Returns true if every vertex of [inner] lies inside [outer].
-## Treats an empty [inner] as NOT inside anything.
 func _polygon_fully_inside(inner: Array, outer: Array) -> bool:
 	if inner.empty():
 		return false
@@ -305,11 +283,7 @@ func _polygon_fully_inside(inner: Array, outer: Array) -> bool:
 			return false
 	return true
 
-## Comparator for sort_custom — sorts hit entries by polygon area ascending.
-func _sort_by_area_asc(a: Dictionary, b: Dictionary) -> bool:
-	return _polygon_area(a.desc.points) < _polygon_area(b.desc.points)
 
-## Computes the signed area of a polygon (shoelace formula), returns absolute value.
 func _polygon_area(pts: Array) -> float:
 	var n = pts.size()
 	if n < 3:

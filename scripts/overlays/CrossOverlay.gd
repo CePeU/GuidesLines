@@ -71,8 +71,7 @@ func _process(_delta):
 			_last_cross_show_v = cross_v
 			_last_cross_show_h = cross_h
 			
-			if cross_v or cross_h:
-				update()
+			update()
 
 # Draw proximity-based cross guides
 # Shows red lines when cursor is near map center
@@ -105,4 +104,3 @@ func _draw():
 			parent_mod.CROSS_LINE_WIDTH,
 			cam_zoom
 		)
-

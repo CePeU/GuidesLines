@@ -139,7 +139,7 @@ func _build_coord_points_custom_snap(direction: Vector2, perp: Vector2, map_rect
 		if not map_rect.has_point(snapped):
 			distance += test_spacing
 			continue
-		var key = str(int(snapped.x * 10)) + "_" + str(int(snapped.y * 10))
+		var key = Vector2(int(snapped.x * 10), int(snapped.y * 10))
 		if not checked.has(key):
 			if GeometryUtils.is_point_on_ray(position, direction, snapped, deg2rad(5.0)):
 				checked[key] = true
@@ -202,24 +202,33 @@ func get_draw_data(map_rect, cell_size):
 
 ## Reset to the full unclipped outline.
 ## Clears Clip/Cut/Difference state; the next get_draw_data() rebuilds primitives
-## from shape parameters (because saved_primitives is now empty).
+## from shape parameters (because the primitives key is now absent).
 func clear_clip():
-	cached_draw_data["primitives"] = []
+	cached_draw_data.erase("primitives")
+	cached_draw_data.erase("polygon")
 	_dirty = true
 
 ## Set the current segments (outline + diff fills merged into one list).
 ## Called by GuidesLinesTool after any Clip / Cut / Difference operation.
 func set_primitives(segs: Array):
 	cached_draw_data["primitives"] = segs
+	cached_draw_data.erase("polygon")
 
 ## Get the current segments.
 func get_primitives() -> Array:
 	return cached_draw_data.get("primitives", [])
 
+# Derived geometry only; callers replace segments through set_primitives().
+func get_polygon() -> Array:
+	if not cached_draw_data.has("polygon"):
+		cached_draw_data["polygon"] = GeometryUtils.chain_segments_to_polygon(get_primitives())
+	return cached_draw_data["polygon"]
+
 func _recalculate_geometry(map_rect, cell_size):
 	# Preserve primitives across recalculation so Clip/Cut/Difference results
 	# survive unrelated property changes (e.g. colour, show_coordinates).
-	# Empty saved_primitives means this is a fresh (unmodified) shape.
+	# An explicit empty outline is valid after clipping; only absence means fresh.
+	var has_saved_primitives = cached_draw_data.has("primitives")
 	var saved_primitives = cached_draw_data.get("primitives", [])
 	cached_draw_data = {}
 
@@ -241,30 +250,23 @@ func _recalculate_geometry(map_rect, cell_size):
 		cached_draw_data["type"]       = "shape"
 		cached_draw_data["shape_type"] = "poly"
 		if cell_size:
-			if saved_primitives.size() > 0:
+			if has_saved_primitives:
 				# Restore previously modified state (Clip / Cut / Difference applied).
 				cached_draw_data["primitives"] = saved_primitives
 			else:
 				# Fresh shape — build full polygon outline from parameters.
 				var radius_px = shape_radius * min(cell_size.x, cell_size.y)
 				var angle_rad = deg2rad(shape_angle)
-				var pts = GeometryUtils.calculate_shape_vertices(position, radius_px, shape_sides, angle_rad)
+				var pts = GeometryUtils.calculate_polygon_vertices(position, radius_px, shape_sides, angle_rad)
 				cached_draw_data["primitives"] = GeometryUtils.points_to_segs(pts)
+				cached_draw_data["polygon"] = pts
 		else:
 			# cell_size unavailable — preserve whatever state existed.
-			cached_draw_data["primitives"] = saved_primitives
-	_dirty = false
+			if has_saved_primitives:
+				cached_draw_data["primitives"] = saved_primitives
+	_dirty = marker_type == "Shape" and not cached_draw_data.has("primitives")
 
-# Get bounding rectangle for marker selection
-func get_rect():
-	var half_size = MARKER_SIZE * 0.5
-	return Rect2(position - Vector2(half_size, half_size), Vector2(MARKER_SIZE, MARKER_SIZE))
-
-# Check if a point is within marker's clickable area
-func is_point_inside(point, threshold = MARKER_SIZE):
-	return position.distance_to(point) < threshold
-
-# Serialize marker data for saving to map file
+# Serialize marker data for JSON and undo snapshots.
 func Save():
 	var data = {
 		"position": [position.x, position.y],
@@ -282,7 +284,10 @@ func Save():
 		data["shape_radius"] = shape_radius
 		data["shape_angle"] = shape_angle
 		data["shape_sides"] = shape_sides
-		# Shape vertices are NOT saved — they are recomputed on load from the parameters above
+		if cached_draw_data.has("primitives"):
+			data["shape_primitives"] = []
+			for seg in get_primitives():
+				data["shape_primitives"].append({"a": [seg.a.x, seg.a.y], "b": [seg.b.x, seg.b.y]})
 	elif marker_type == "Path":
 		# Serialize path points
 		var points_data = []
@@ -299,6 +304,25 @@ func Save():
 
 # Deserialize marker data from map file (current format only)
 func Load(data):
+	# Validate the new JSON geometry before replacing any existing marker state.
+	var primitives = []
+	if data.get("marker_type", "Line") == "Shape" and data.has("shape_primitives"):
+		if not data["shape_primitives"] is Array:
+			return false
+		for seg in data["shape_primitives"]:
+			if not seg is Dictionary:
+				return false
+			for key in ["a", "b"]:
+				var point = seg.get(key)
+				if not point is Array or point.size() != 2:
+					return false
+				for coordinate in point:
+					if not (coordinate is int or coordinate is float):
+						return false
+					if is_nan(float(coordinate)) or is_inf(float(coordinate)):
+						return false
+			primitives.append({"type": "seg", "a": Vector2(seg.a[0], seg.a[1]), "b": Vector2(seg.b[0], seg.b[1])})
+	cached_draw_data = {}
 	if data.has("position"):
 		position = Vector2(data.position[0], data.position[1])
 	
@@ -322,7 +346,8 @@ func Load(data):
 		shape_radius  = data.get("shape_radius", 1.0)
 		shape_angle   = data.get("shape_angle", 0.0)
 		shape_sides   = data.get("shape_sides", 6)
-		# marker_points are not used for Shape — vertices are recomputed from the parameters above
+		if data.has("shape_primitives"):
+			set_primitives(primitives)
 		marker_points = []
 	elif marker_type == "Path":
 		if data.has("marker_points"):
@@ -358,3 +383,4 @@ func Load(data):
 		show_coordinates = false		
 	_dirty = true       # Invalidate geometry cache
 	_coord_dirty = true # Invalidate coordinate cache
+	return true

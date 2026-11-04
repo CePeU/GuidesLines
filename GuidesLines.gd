@@ -266,19 +266,13 @@ func update(_delta):
 	if tool_created and guides_tool and Input.is_action_just_released("guideslines_toggle_delete_mode", true):
 		var new_state = not guides_tool.delete_mode
 		guides_tool.set_delete_mode(new_state)
-		if guides_tool.tool_panel:
-			var cb = guides_tool.tool_panel.find_node("DeleteModeCheckbox", true, false)
-			if cb:
-				cb.pressed = new_state
+
 
 	# Hotkey to toggle Move Mode
 	if tool_created and guides_tool and Input.is_action_just_released("guideslines_toggle_move_mode", true):
 		var new_state = not guides_tool.move_mode
 		guides_tool.set_move_mode(new_state)
-		if guides_tool.tool_panel:
-			var cb = guides_tool.tool_panel.find_node("MoveModeCheckbox", true, false)
-			if cb:
-				cb.pressed = new_state
+
 
 	# Only work when map is loaded
 	if Global.World == null or Global.WorldUI == null:
@@ -365,51 +359,47 @@ func _update_proximity_and_permanent_guides(_delta):
 			cross_show_h = false
 			cross_overlay.update()
 	
-	# Update permanent guides
-	if perm_overlay != null:
-		perm_overlay.update()
 
 # ============================================================================
 # TOOL UI CALLBACKS
 # ============================================================================
 
-func _on_delete_all_markers(tool_instance):
-	if tool_instance:
-		tool_instance.delete_all_markers()
-
-func _on_show_coordinates_toggled(enabled, tool_instance):
-	if tool_instance:
-		tool_instance.set_show_coordinates(enabled)
-
-func _on_delete_mode_toggled(enabled, tool_instance):
-	if tool_instance:
-		tool_instance.set_delete_mode(enabled)
-
-func _on_move_mode_toggled(enabled, tool_instance):
-	if tool_instance:
-		tool_instance.set_move_mode(enabled)
 
 func _on_cross_guides_toggled(enabled):
+	if cross_guides_enabled == enabled:
+		return
 	cross_guides_enabled = enabled
+	if not enabled:
+		cross_show_v = false
+		cross_show_h = false
+	if guides_lines_api:
+		guides_lines_api.emit_signal("settings_changed", "cross_guides", enabled)
 
 func _on_perm_vertical_toggled(enabled):
+	if perm_vertical_enabled == enabled:
+		return
 	perm_vertical_enabled = enabled
 	_on_perm_guide_changed(enabled)
+	if guides_lines_api:
+		guides_lines_api.emit_signal("settings_changed", "perm_vertical", enabled)
 
 func _on_perm_horizontal_toggled(enabled):
+	if perm_horizontal_enabled == enabled:
+		return
 	perm_horizontal_enabled = enabled
 	_on_perm_guide_changed(enabled)
+	if guides_lines_api:
+		guides_lines_api.emit_signal("settings_changed", "perm_horizontal", enabled)
 
 func _on_perm_coordinates_toggled(enabled):
+	if show_coordinates_enabled == enabled:
+		return
 	show_coordinates_enabled = enabled
 	_on_perm_guide_changed(enabled)
+	if guides_lines_api:
+		guides_lines_api.emit_signal("settings_changed", "show_coordinates", enabled)
 
-# ============================================================================
-# TOOL CREATION
-# ============================================================================
-
-# Create and register the main Guide Markers tool
-# Sets up the tool instance and its UI panel
+# Create and register the guide marker tool with the host.
 func create_tool():
 	if LOGGER:
 		LOGGER.debug("Creating Guide Markers tool")
@@ -533,3 +523,27 @@ func update_cross_guides():
 		cross_overlay.update()
 
 
+func _on_markers_visible_toggled(enabled):
+	var changed = markers_visible != enabled
+	markers_visible = enabled
+	if guides_tool:
+		guides_tool.ui._update_markers_visible_checkbox()
+		if changed and guides_tool.overlay:
+			guides_tool.overlay.update()
+	if changed and guides_lines_api:
+		guides_lines_api.emit_signal("settings_changed", "markers_visible", enabled)
+
+func _on_markers_opacity_changed(value):
+	if is_nan(value) or is_inf(value):
+		return
+	value = clamp(value, 0.0, 1.0)
+	var changed = markers_opacity != value
+	markers_opacity = value
+	if guides_tool:
+		guides_tool.ui._update_markers_opacity_spinbox()
+		if changed:
+			guides_tool._apply_opacity_to_all(value)
+			if guides_tool.overlay:
+				guides_tool.overlay.update()
+	if changed and guides_lines_api:
+		guides_lines_api.emit_signal("settings_changed", "markers_opacity", value)

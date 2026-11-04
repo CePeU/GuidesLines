@@ -9,7 +9,6 @@ extends Reference
 const CLASS_NAME = "GuidesLinesPlacement"
 const GuidesLinesHistory = preload("GuidesLinesHistory.gd")
 
-const MARKER_TYPE_PATH = "Path"
 
 var tool = null  # Reference to GuidesLinesTool
 
@@ -58,7 +57,7 @@ func finalize_path_marker(closed):
 
 	var marker_data = {
 		"position": tool.path_temp_points[0],  # First point is marker position
-		"marker_type": MARKER_TYPE_PATH,
+		"marker_type": tool.MARKER_TYPE_PATH,
 		"color": tool.active_color,
 		"coordinates": tool.show_coordinates,
 		"id": tool.next_id,

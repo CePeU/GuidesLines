@@ -100,12 +100,7 @@ var type_settings = {
 }
 
 # Default values
-const DEFAULT_ANGLE = 0.0
-const DEFAULT_SHAPE_RADIUS = 1.0
-const DEFAULT_SHAPE_ANGLE = 0.0
 const DEFAULT_SHAPE_SIDES = 6  # Fallback for missing "sides" key in saved/loaded marker data
-const DEFAULT_COLOR = Color(0, 0.7, 1, 1)
-const DEFAULT_MIRROR = false
 
 # Markers storage
 var markers = []  # Array of GuideMarker instances
@@ -171,12 +166,9 @@ func Update(_delta):
 	# snappy_mod between Corner and Edge without touching the Side spinbox —
 	# no signal is emitted by snappy_mod, so we poll here every frame instead.
 	if active_marker_type == MARKER_TYPE_SHAPE and active_shape_size_mode == "side":
-		var corrected = GeometryUtils.side_to_circumradius(active_shape_side, active_shape_sides) * _get_hex_edge_correction()
-		if corrected < 0.1:
-			corrected = 0.1
-		if abs(corrected - active_shape_radius) > 0.0001:
-			active_shape_radius = corrected
-			type_settings[MARKER_TYPE_SHAPE]["radius"] = corrected
+		var previous_radius = active_shape_radius
+		recompute_radius_from_side()
+		if abs(active_shape_radius - previous_radius) > 0.0001:
 			if ui:
 				ui._update_shape_radius_spinbox()
 			if overlay:
@@ -215,58 +207,13 @@ func place_marker(pos):
 		_handle_path_placement(pos)
 		return
 
-	# Difference mode: don't place a marker — instead apply difference to existing shapes
-	if difference_mode and active_marker_type == MARKER_TYPE_SHAPE:
-		var final_pos_diff = pos
-		if parent_mod.Global.Editor.IsSnapping:
-			final_pos_diff = snap_position_to_grid(pos)
-		var diff_desc = _build_shape_descriptor_at(final_pos_diff)
-		if diff_desc.empty():
-			return
-		var snap = _take_difference_snapshot(diff_desc)
-		_do_apply_difference(diff_desc)
-		_record_history(GuidesLinesHistory.DifferenceRecord.new(self, diff_desc, snap))
-		return
-
-	# Cut mode: clip existing shapes with the new shape, converting results to Path markers.
-	# The new shape itself is never placed.
-	if cut_mode and active_marker_type == MARKER_TYPE_SHAPE:
-		var final_pos_cut = pos
-		if parent_mod.Global.Editor.IsSnapping:
-			final_pos_cut = snap_position_to_grid(pos)
-		var cut_desc = _build_shape_descriptor_at(final_pos_cut)
-		if cut_desc.empty():
-			return
-		var cut_snap = _take_cut_snapshot(cut_desc)
-		if cut_snap.empty():
-			return
-		var result = _do_apply_cut(cut_desc)
-		_record_history(GuidesLinesHistory.CutRecord.new(
-				self, cut_desc, cut_snap, result.deleted_ids, result.created_markers_data))
-		return
-
-	# Merge mode: merge new shape outline into every overlapping existing shape.
-	# The new marker is never added — existing markers absorb the new shape.
-	if merge_shapes and active_marker_type == MARKER_TYPE_SHAPE:
-		var final_pos_merge = pos
-		if parent_mod.Global.Editor.IsSnapping:
-			final_pos_merge = snap_position_to_grid(pos)
-		var merge_desc = _build_shape_descriptor_at(final_pos_merge)
-		if merge_desc.empty():
-			return
-		var merge_snap = _snapshot_potential_merge_targets(merge_desc)
-		if not merge_snap.empty():
-			var merge_absorbed = _do_apply_merge(merge_desc, final_pos_merge)
-			_record_history(GuidesLinesHistory.MergeShapeRecord.new(
-					self, merge_desc, final_pos_merge, merge_snap, merge_absorbed))
-			return
-		# No overlapping shapes — fall through to normal marker placement.
-
-	# Apply grid snapping if enabled globally
 	var final_pos = pos
 	if parent_mod.Global.Editor.IsSnapping:
 		final_pos = snap_position_to_grid(pos)
-	
+	if active_marker_type == MARKER_TYPE_SHAPE and (difference_mode or cut_mode or merge_shapes):
+		if _try_apply_non_placing_shape_mode(_build_shape_descriptor_at(final_pos), final_pos):
+			return
+
 	var marker_data = {
 		"position": final_pos,
 		"marker_type": active_marker_type,
@@ -472,32 +419,8 @@ func _place_template_marker(pos: Vector2) -> void:
 		if tmpl_desc.empty():
 			return
 
-		# Difference mode — punch a hole, don't place anything
-		if difference_mode:
-			var snap = _take_difference_snapshot(tmpl_desc)
-			_do_apply_difference(tmpl_desc)
-			_record_history(GuidesLinesHistory.DifferenceRecord.new(self, tmpl_desc, snap))
+		if _try_apply_non_placing_shape_mode(tmpl_desc, final_pos):
 			return
-
-		# Cut mode — clip existing shapes, don't place anything
-		if cut_mode:
-			var cut_snap = _take_cut_snapshot(tmpl_desc)
-			if cut_snap.empty():
-				return
-			var result = _do_apply_cut(tmpl_desc)
-			_record_history(GuidesLinesHistory.CutRecord.new(
-					self, tmpl_desc, cut_snap, result.deleted_ids, result.created_markers_data))
-			return
-
-		# Merge mode — absorb into overlapping shapes; fall through if no overlap
-		if merge_shapes:
-			var merge_snap = _snapshot_potential_merge_targets(tmpl_desc)
-			if not merge_snap.empty():
-				var merge_absorbed = _do_apply_merge(tmpl_desc, final_pos)
-				_record_history(GuidesLinesHistory.MergeShapeRecord.new(
-						self, tmpl_desc, final_pos, merge_snap, merge_absorbed))
-				return
-			# No overlap — fall through to normal placement below
 
 	# ── BUILD MARKER DATA ────────────────────────────────────────────────────
 	var marker_data = {
@@ -534,51 +457,23 @@ func _place_template_marker(pos: Vector2) -> void:
 			marker_data["arrow_head_length"] = tmpl_data.get("arrow_head_length", 50.0)
 			marker_data["arrow_head_angle"]  = tmpl_data.get("arrow_head_angle",  30.0)
 
-	# ── PLACE WITH CONFORMING / WRAPPING ────────────────────────────────────
-	# For these modes, _do_place_marker calls the apply methods internally —
-	# but it will use freshly-built parametric primitives, which is wrong for
-	# modified templates. We temporarily disable both flags, place the marker,
-	# inject the correct primitives, then run the apply methods ourselves.
+	# Store absolute template geometry so initial placement and redo share it.
+	if tmpl_data["marker_type"] == MARKER_TYPE_SHAPE and tmpl_data.has("shape_primitives"):
+		marker_data["shape_primitives"] = []
+		var rot_rad = deg2rad(template_rotation_offset)
+		for seg in tmpl_data["shape_primitives"]:
+			marker_data["shape_primitives"].append({
+				"type": "seg", "a": final_pos + seg.a.rotated(rot_rad),
+				"b": final_pos + seg.b.rotated(rot_rad)})
+
 	var clip_snaps = {}
 	if tmpl_data["marker_type"] == MARKER_TYPE_SHAPE:
 		var tmpl_desc = _build_shape_descriptor_from_template(final_pos)
 		if conforming_mode and not tmpl_desc.empty():
 			clip_snaps = _snapshot_potential_clip_targets_by_desc(tmpl_desc)
 
-	var prev_conforming = conforming_mode
-	var prev_wrapping   = wrapping_mode
-	if tmpl_data["marker_type"] == MARKER_TYPE_SHAPE and tmpl_data.has("shape_primitives"):
-		# Disable so _do_place_marker won't run them with the wrong geometry
-		conforming_mode = false
-		wrapping_mode   = false
-
 	_do_place_marker(marker_data)
 	next_id += 1
-
-	# Inject modified primitives into the placed marker (Shape + shape_primitives only)
-	if tmpl_data.has("shape_primitives") and tmpl_data["marker_type"] == MARKER_TYPE_SHAPE:
-		var placed = markers_lookup.get(marker_data["id"])
-		if placed:
-			var rot_rad = deg2rad(template_rotation_offset)
-			var abs_prims = []
-			for rel_seg in tmpl_data["shape_primitives"]:
-				abs_prims.append({
-					"type": "seg",
-					"a": final_pos + rel_seg["a"].rotated(rot_rad),
-					"b": final_pos + rel_seg["b"].rotated(rot_rad),
-				})
-			placed.set_primitives(abs_prims)
-			# Now run the deferred apply calls with correct geometry
-			conforming_mode = prev_conforming
-			wrapping_mode   = prev_wrapping
-			if conforming_mode:
-				_apply_conforming_to_existing_shapes(placed)
-			if wrapping_mode:
-				_apply_wrapping_to_new_shape(placed)
-	else:
-		# Restore flags (were never changed for non-primitives shapes)
-		conforming_mode = prev_conforming
-		wrapping_mode   = prev_wrapping
 
 	_record_history(GuidesLinesHistory.PlaceMarkerRecord.new(self, marker_data, clip_snaps))
 
@@ -595,7 +490,7 @@ func _place_template_marker(pos: Vector2) -> void:
 func api_place_marker(marker_data: Dictionary) -> void:
 	var clip_snaps = {}
 	if marker_data.get("marker_type") == MARKER_TYPE_SHAPE and conforming_mode:
-		clip_snaps = _snapshot_potential_clip_targets(marker_data["position"])
+		clip_snaps = _snapshot_potential_clip_targets_by_desc(_get_shape_descriptor_from_marker_data(marker_data))
 	_do_place_marker(marker_data)
 	next_id += 1
 	_record_history(GuidesLinesHistory.PlaceMarkerRecord.new(self, marker_data, clip_snaps))
@@ -612,37 +507,16 @@ func _get_shape_descriptor_from_marker_data(marker_data: Dictionary) -> Dictiona
 	tmp.shape_radius = marker_data.get("shape_radius", active_shape_radius)
 	tmp.shape_angle  = marker_data.get("shape_angle", 0.0)
 	tmp.shape_sides  = marker_data.get("shape_sides", DEFAULT_SHAPE_SIDES)
+	if marker_data.has("shape_primitives"):
+		tmp.set_primitives(marker_data["shape_primitives"].duplicate(true))
 	return _get_shape_descriptor(tmp, cell_size)
 
 ## Bridge: snapshot clip targets using an already-built descriptor instead of
 ## the tool's active shape parameters.  Semantically identical to
 ## _snapshot_potential_clip_targets but decoupled from active settings.
 func _snapshot_potential_clip_targets_by_desc(new_desc: Dictionary) -> Dictionary:
-	var snap = {}
-	if new_desc.empty():
-		return snap
-	var cell_size = _get_grid_cell_size()
-	if cell_size == null:
-		return snap
-	for marker in markers:
-		if marker.marker_type != MARKER_TYPE_SHAPE:
-			continue
-		var other_desc = _get_shape_descriptor(marker, cell_size)
-		if _shapes_overlap(new_desc, other_desc):
-			snap[marker.id] = {
-				"primitives": marker.get_primitives().duplicate(true)
-			}
-	return snap
+	return _snapshot_overlapping_shapes(new_desc)
 
-## API bridge: Place a Shape marker with Merge mode applied.
-## Returns:
-##   {
-##     "affected_markers":    Array — one entry for the surviving primary marker:
-##                              { marker_id, new_polygon, old_position, new_position }
-##     "absorbed_marker_ids": Array[int] — IDs of every marker that was absorbed
-##                              and deleted during the merge (empty if only one overlap)
-##   }
-## Returns {} on internal failure or {"affected_markers":[], "absorbed_marker_ids":[]} if no overlap.
 func api_place_shape_merge(marker_data: Dictionary) -> Dictionary:
 	var merge_desc = _get_shape_descriptor_from_marker_data(marker_data)
 	if merge_desc.empty():
@@ -715,15 +589,17 @@ func api_place_shape_conforming(marker_data: Dictionary) -> Dictionary:
 	}
 
 ## API bridge: Place a Shape marker with Wrapping mode applied.
-## Returns { "marker_id": int, "dented_by": Array[int], "marker_polygon": Array[Vector2] }
-## Returns {"marker_id":-1,"dented_by":[],"marker_polygon":[]} on failure.
+## Returns marker_id, dented_by IDs, marker_polygon and affected_markers entries
+## {marker_id, new_polygon} for the unchanged shapes that caused dents.
+## Returns marker_id=-1 and empty arrays on failure.
 func api_place_shape_wrapping(marker_data: Dictionary) -> Dictionary:
 	var cell_size = _get_grid_cell_size()
 	if cell_size == null:
-		return {"marker_id": -1, "dented_by": [], "marker_polygon": []}
+		return {"marker_id": -1, "dented_by": [], "marker_polygon": [], "affected_markers": []}
 	# Identify which existing shapes would cause dents (pre-placement overlap check).
 	var tmp_desc = _get_shape_descriptor_from_marker_data(marker_data)
 	var dented_by_ids = []
+	var affected = []
 	if not tmp_desc.empty():
 		for m in markers:
 			if m.marker_type != MARKER_TYPE_SHAPE:
@@ -731,6 +607,7 @@ func api_place_shape_wrapping(marker_data: Dictionary) -> Dictionary:
 			var other_desc = _get_shape_descriptor(m, cell_size)
 			if not other_desc.empty() and _shapes_overlap(other_desc, tmp_desc):
 				dented_by_ids.append(m.id)
+				affected.append({"marker_id": m.id, "new_polygon": other_desc.points.duplicate()})
 	var prev_wrapping = wrapping_mode
 	wrapping_mode = true
 	_do_place_marker(marker_data)
@@ -746,6 +623,7 @@ func api_place_shape_wrapping(marker_data: Dictionary) -> Dictionary:
 	return {
 		"marker_id":      marker_data["id"],
 		"dented_by":      dented_by_ids,
+		"affected_markers": affected,
 		"marker_polygon": final_polygon,
 	}
 
@@ -852,7 +730,6 @@ func _do_delete_marker(index):
 		var marker = markers[index]
 		var deleted_id = marker.id
 		# Clean up clipping relationships before removing
-		_remove_shape_clipping(deleted_id)
 		markers_lookup.erase(marker.id) # Remove from lookup
 		markers.remove(index)
 		update_ui()
@@ -872,12 +749,6 @@ func _undo_delete_marker(marker_data, index):
 	markers_lookup[marker.id] = marker # Add to lookup
 	if marker.id >= next_id:
 		next_id = marker.id + 1
-	# Reapply conforming relationship if the feature is enabled
-	if conforming_mode and marker.marker_type == MARKER_TYPE_SHAPE:
-		_apply_conforming_to_existing_shapes(marker)
-	# Reapply wrapping dent to the restored marker if the feature is enabled
-	if wrapping_mode and marker.marker_type == MARKER_TYPE_SHAPE:
-		_apply_wrapping_to_new_shape(marker)
 	update_ui()
 	if overlay:
 		overlay.update()
@@ -902,6 +773,8 @@ func _do_place_marker(marker_data):
 		marker.set_property("shape_radius", marker_data["shape_radius"])
 		marker.set_property("shape_angle", marker_data.get("shape_angle", 0.0))
 		marker.set_property("shape_sides", marker_data.get("shape_sides", DEFAULT_SHAPE_SIDES))
+		if marker_data.has("shape_primitives"):
+			marker.set_primitives(marker_data["shape_primitives"].duplicate(true))
 	elif marker_data["marker_type"] == MARKER_TYPE_PATH:
 		marker.set_property("marker_points", marker_data["marker_points"].duplicate())
 		marker.set_property("path_closed", marker_data["path_closed"])
@@ -949,7 +822,6 @@ func _undo_place_marker(marker_id):
 	if markers_lookup.has(marker_id):
 		var marker = markers_lookup[marker_id]
 		# Clean up clipping relationships contributed by this marker
-		_remove_shape_clipping(marker_id)
 		markers.erase(marker) # O(n) linear search — acceptable since markers_lookup O(1) already found it
 		markers_lookup.erase(marker_id) # O(1)
 		
@@ -964,14 +836,12 @@ func _undo_place_marker(marker_id):
 
 # Enable/disable coordinate display on new markers
 func set_show_coordinates(enabled):
-	# Sets coordinate display flag for new Line markers.
+	var changed = show_coordinates != enabled
 	show_coordinates = enabled
-	
-	# Update UI
-	if tool_panel:
-		var coords_check = tool_panel.find_node("CoordinatesCheckbox", true, false)
-		if coords_check:
-			coords_check.pressed = show_coordinates
+	if ui:
+		ui._set_control_value("CoordinatesCheckbox", enabled, "pressed")
+	if changed and parent_mod.guides_lines_api:
+		parent_mod.guides_lines_api.emit_signal("settings_changed", "marker_coordinates", enabled)
 
 func set_delete_mode(enabled):
 	delete_mode = enabled
@@ -1027,10 +897,13 @@ func _do_move_marker(marker, new_pos: Vector2):
 	var delta = new_pos - marker.position
 
 	if marker.marker_type == MARKER_TYPE_SHAPE:
-		# Primitives are stored in absolute world-space coords — translate in-place.
-		for seg in marker.get_primitives():
+		# Ensure fresh geometry exists, then translate the world-space segments.
+		marker.get_draw_data(null, _get_grid_cell_size())
+		var primitives = marker.get_primitives()
+		for seg in primitives:
 			seg.a += delta
 			seg.b += delta
+		marker.set_primitives(primitives)
 
 	elif marker.marker_type == MARKER_TYPE_PATH:
 		# All path points are absolute world-space positions — translate each one.
@@ -1204,6 +1077,11 @@ func _get_hex_edge_correction() -> float:
 		return 1.0
 	return 2.0 / sqrt(3.0)
 
+func recompute_radius_from_side() -> float:
+	active_shape_radius = max(0.1, GeometryUtils.side_to_circumradius(active_shape_side, active_shape_sides) * _get_hex_edge_correction())
+	type_settings[MARKER_TYPE_SHAPE]["radius"] = active_shape_radius
+	return active_shape_radius
+
 # ============================================================================
 # SHAPE CLIPPING (Clip Intersecting Shapes feature)
 # ============================================================================
@@ -1221,7 +1099,7 @@ func _get_shape_descriptor(marker, cell_size) -> Dictionary:
 	# Ensures primitives exist; for fresh markers builds them from shape params
 	# (once only — subsequent calls hit the cache).
 	marker.get_draw_data(null, cell_size)
-	var pts = GeometryUtils.chain_segments_to_polygon(marker.get_primitives())
+	var pts = marker.get_polygon()
 	if pts.empty():
 		return {}
 	return {"shape_type": "poly", "points": pts}
@@ -1295,37 +1173,9 @@ func _point_in_shape(pt: Vector2, desc: Dictionary) -> bool:
 # marker is still placed normally.
 # The new marker itself keeps its full unclipped outline.
 func _apply_conforming_to_existing_shapes(new_marker):
-	if not conforming_mode or new_marker.marker_type != MARKER_TYPE_SHAPE:
-		return
-	var cell_size = _get_grid_cell_size()
-	if cell_size == null:
-		return
-	var new_desc = _get_shape_descriptor(new_marker, cell_size)
-	if new_desc.empty():
-		return
-	for other in markers:
-		if other.id == new_marker.id or other.marker_type != MARKER_TYPE_SHAPE:
-			continue
-		var other_desc = _get_shape_descriptor(other, cell_size)
-		if other_desc.empty():
-			continue
-		if not _shapes_overlap(new_desc, other_desc):
-			continue
-		# Keep segments of other that are OUTSIDE new_marker,
-		# then append the new_marker boundary where it runs inside other.
-		var diff_boundary = GeometryUtils.clip_polygon_inside_shape(
-			new_desc.points, other_desc)
-		other.set_primitives(
-			GeometryUtils.clip_primitives_against_shapes(
-				other.get_primitives(), [new_desc]) + diff_boundary)
-	if overlay:
-		overlay.update()
+	if conforming_mode and new_marker.marker_type == MARKER_TYPE_SHAPE:
+		_subtract_desc_from_markers(_get_shape_descriptor(new_marker, _get_grid_cell_size()), new_marker.id)
 
-# Apply WRAPPING when [new_marker] is placed: for every existing Shape marker
-# that overlaps new_marker, dent new_marker's own outline to the boundary of
-# that existing shape. Existing markers are left completely unchanged.
-# Multiple overlapping shapes are applied sequentially, each time re-deriving
-# new_marker's current outline so the clips chain correctly.
 func _apply_wrapping_to_new_shape(new_marker):
 	if not wrapping_mode or new_marker.marker_type != MARKER_TYPE_SHAPE:
 		return
@@ -1355,50 +1205,28 @@ func _apply_wrapping_to_new_shape(new_marker):
 	if overlay:
 		overlay.update()
 
-# Clip / Cut relationships are reflected directly in primitives.
-# This function is kept as a no-op hook in case future logic needs it.
-func _remove_shape_clipping(_removed_id):
-	pass
-
-# ============================================================================
-# MERGE MODE CORE
-# ============================================================================
-
-## Snapshot primitives AND positions of all Shape markers that overlap merge_desc.
-## Called before _do_apply_merge so that MergeShapeRecord can restore them on undo.
 func _snapshot_potential_merge_targets(merge_desc: Dictionary) -> Dictionary:
-	var snap = {}
+	return _snapshot_overlapping_shapes(merge_desc, true)
+
+func _snapshot_overlapping_shapes(desc: Dictionary, include_meta: bool = false) -> Dictionary:
+	var snapshots = {}
 	var cell_size = _get_grid_cell_size()
-	if cell_size == null:
-		return snap
+	if desc.empty() or cell_size == null:
+		return snapshots
 	for marker in markers:
 		if marker.marker_type != MARKER_TYPE_SHAPE:
 			continue
-		var other_desc = _get_shape_descriptor(marker, cell_size)
-		if other_desc.empty():
+		var other = _get_shape_descriptor(marker, cell_size)
+		if other.empty() or not _shapes_overlap(desc, other):
 			continue
-		if _shapes_overlap(merge_desc, other_desc):
-			snap[marker.id] = {
-				"primitives": marker.get_primitives().duplicate(true),
-				"position":   marker.position,
-				"color":      marker.color
-			}
-	return snap
+		var snap = {"primitives": marker.get_primitives().duplicate(true)}
+		if include_meta:
+			snap["position"] = marker.position
+			snap["color"] = marker.color
+			snap["saved_marker"] = marker.Save()
+		snapshots[marker.id] = snap
+	return snapshots
 
-## Merge [merge_desc] (the virtual new shape at [new_pos]) into ALL overlapping
-## existing Shape markers simultaneously, producing ONE unified marker.
-##
-## Algorithm:
-##   1. Collect every Shape marker that overlaps merge_desc.
-##   2. Iteratively fold each one's polygon into a running union polygon,
-##      starting from merge_desc's own points.
-##   3. Write the final union outline back to the FIRST overlapping marker.
-##   4. Remove all other overlapping markers from [markers] and [markers_lookup].
-##
-## Returns an Array of the IDs of every marker that was absorbed (deleted) —
-## i.e. all overlapping markers except the primary one.
-## The primary marker's ID is NOT included in the returned list.
-## Returns [] when there is nothing to merge or on internal failure.
 func _do_apply_merge(merge_desc: Dictionary, new_pos: Vector2) -> Array:
 	if merge_desc.empty():
 		return []
@@ -1486,6 +1314,8 @@ func _do_apply_merge(merge_desc: Dictionary, new_pos: Vector2) -> Array:
 		if idx != -1:
 			markers.remove(idx)
 		markers_lookup.erase(m.id)
+		if parent_mod.guides_lines_api:
+			parent_mod.guides_lines_api._notify_marker_deleted(m.id)
 		if LOGGER:
 			LOGGER.debug("Merge: marker %d absorbed into marker %d" % [m.id, primary.id])
 
@@ -1500,78 +1330,29 @@ func _do_apply_merge(merge_desc: Dictionary, new_pos: Vector2) -> Array:
 
 ## Snapshot primitives of all Shape markers that intersect diff_desc.
 func _take_difference_snapshot(diff_desc: Dictionary) -> Dictionary:
-	var snap = {}
-	var cell_size = _get_grid_cell_size()
-	for marker in markers:
-		if marker.marker_type != MARKER_TYPE_SHAPE:
-			continue
-		var desc = _get_shape_descriptor(marker, cell_size)
-		if desc.empty():
-			continue
-		if _shapes_overlap(desc, diff_desc):
-			snap[marker.id] = {
-				"primitives": marker.get_primitives().duplicate(true)
-			}
-	return snap
+	return _snapshot_overlapping_shapes(diff_desc)
 
-## Apply a Difference operation directly to each affected marker's current
-## primitives (no rebuild from original polygon).
-## Outline segments inside the diff area are replaced by the diff boundary.
 func _do_apply_difference(diff_desc: Dictionary):
+	_subtract_desc_from_markers(diff_desc)
+
+func _subtract_desc_from_markers(desc: Dictionary, exclude_id: int = -1):
 	var cell_size = _get_grid_cell_size()
+	if desc.empty() or cell_size == null:
+		return
 	for marker in markers:
-		if marker.marker_type != MARKER_TYPE_SHAPE:
+		if marker.marker_type != MARKER_TYPE_SHAPE or marker.id == exclude_id:
 			continue
-		var target_desc = _get_shape_descriptor(marker, cell_size)
-		if target_desc.empty():
+		var target = _get_shape_descriptor(marker, cell_size)
+		if target.empty() or not _shapes_overlap(target, desc):
 			continue
-		if not _shapes_overlap(target_desc, diff_desc):
-			continue
-
-		# Clip the current outline: keep segments OUTSIDE the diff shape.
-		# Append the diff boundary (inside the marker) to the same list.
-		var diff_boundary = GeometryUtils.clip_polygon_inside_shape(
-			diff_desc.points, target_desc)
-		marker.set_primitives(
-			GeometryUtils.clip_primitives_against_shapes(
-				marker.get_primitives(), [diff_desc]) + diff_boundary)
-
+		marker.set_primitives(GeometryUtils.clip_primitives_against_shapes(
+			marker.get_primitives(), [desc]) + GeometryUtils.clip_polygon_inside_shape(desc.points, target))
 	if overlay:
 		overlay.update()
 
-## Snapshot primitives of all Shape markers that would be affected
-## by a new Conforming shape placed at [pos] with the current active settings.
-## Uses _shapes_overlap (not just intersect) so that fully-contained shapes
-## are captured too.
-## Call this BEFORE _do_place_marker so the snapshot captures the pre-op state.
 func _snapshot_potential_clip_targets(pos: Vector2) -> Dictionary:
-	var snap = {}
-	var cell_size = _get_grid_cell_size()
-	if cell_size == null:
-		return snap
-	var new_desc = _build_shape_descriptor_at(pos)
-	if new_desc.empty():
-		return snap
-	for marker in markers:
-		if marker.marker_type != MARKER_TYPE_SHAPE:
-			continue
-		var other_desc = _get_shape_descriptor(marker, cell_size)
-		if _shapes_overlap(new_desc, other_desc):
-			snap[marker.id] = {
-				"primitives": marker.get_primitives().duplicate(true)
-			}
-	return snap
+	return _snapshot_overlapping_shapes(_build_shape_descriptor_at(pos))
 
-
-# ============================================================================
-# CUT MODE CORE
-# ============================================================================
-
-## Snapshot the pre-cut state of every Shape marker affected by [cut_desc].
-## A marker is affected when:
-##   (a) Its edges intersect the cut shape, OR
-##   (b) It lies fully inside the cut shape (will be deleted entirely).
-## Called BEFORE _do_apply_cut so the record can undo all changes.
 func _take_cut_snapshot(cut_desc: Dictionary) -> Dictionary:
 	var snap = {}
 	var cell_size = _get_grid_cell_size()
@@ -1588,7 +1369,8 @@ func _take_cut_snapshot(cut_desc: Dictionary) -> Dictionary:
 			snap[marker.id] = {
 				"primitives": marker.get_primitives().duplicate(true),
 				"color":      marker.color,
-				"position":   marker.position
+				"position":   marker.position,
+				"saved_marker": marker.Save()
 			}
 			continue
 		# Case (b): shape fully inside cut (no edge intersection but contained).
@@ -1596,7 +1378,8 @@ func _take_cut_snapshot(cut_desc: Dictionary) -> Dictionary:
 			snap[marker.id] = {
 				"primitives": marker.get_primitives().duplicate(true),
 				"color":      marker.color,
-				"position":   marker.position
+				"position":   marker.position,
+				"saved_marker": marker.Save()
 			}
 	return snap
 
@@ -1664,6 +1447,8 @@ func _do_apply_cut(cut_desc: Dictionary) -> Dictionary:
 			deleted_ids.append(marker.id)
 			markers_lookup.erase(marker.id)
 			markers.remove(i)
+			if parent_mod.guides_lines_api:
+				parent_mod.guides_lines_api._notify_marker_deleted(marker.id)
 			if LOGGER:
 				LOGGER.warn("Cut: deleted marker %d (split_segments_into_chains returned empty)" % [marker.id])
 			continue
@@ -1730,10 +1515,8 @@ func _undo_cut(snapshots: Dictionary, deleted_ids: Array, created_markers_data: 
 		if deleted_ids.has(sid):
 			# Was deleted — re-create as Shape.
 			var marker = GuideMarkerClass.new()
-			marker.id          = sid
-			marker.marker_type = MARKER_TYPE_SHAPE
-			marker.position    = snap.position
-			marker.color       = snap.color
+			marker.Load(snap.saved_marker)
+			marker.color = snap.color
 			marker.update_opacity(_current_opacity())
 			marker.set_primitives(snap.primitives.duplicate(true))
 			markers.append(marker)
@@ -1746,11 +1529,9 @@ func _undo_cut(snapshots: Dictionary, deleted_ids: Array, created_markers_data: 
 			# Was modified (Path) — restore back to Shape.
 			if markers_lookup.has(sid):
 				var marker = markers_lookup[sid]
-				marker.marker_type    = MARKER_TYPE_SHAPE
-				marker.marker_points  = []
-				marker.path_closed    = false
-				marker.path_end_arrow = false
-				marker.position       = snap.position  # Restore original center.
+				marker.Load(snap.saved_marker)
+				marker.color = snap.color
+				marker.update_opacity(_current_opacity())
 				marker.set_primitives(snap.primitives.duplicate(true))
 				marker._dirty = true
 				if LOGGER:
@@ -1798,3 +1579,25 @@ func adjust_shape_angle_with_wheel(direction):
 func rotate_shape_45():
 	if ui:
 		ui.rotate_shape_45()
+
+func _try_apply_non_placing_shape_mode(desc: Dictionary, pos: Vector2) -> bool:
+	if desc.empty():
+		return true
+	if difference_mode:
+		var snapshots = _take_difference_snapshot(desc)
+		_do_apply_difference(desc)
+		_record_history(GuidesLinesHistory.DifferenceRecord.new(self, desc, snapshots))
+		return true
+	if cut_mode:
+		var snapshots = _take_cut_snapshot(desc)
+		if not snapshots.empty():
+			var result = _do_apply_cut(desc)
+			_record_history(GuidesLinesHistory.CutRecord.new(self, desc, snapshots, result.deleted_ids, result.created_markers_data))
+		return true
+	if merge_shapes:
+		var snapshots = _snapshot_potential_merge_targets(desc)
+		if not snapshots.empty():
+			var absorbed = _do_apply_merge(desc, pos)
+			_record_history(GuidesLinesHistory.MergeShapeRecord.new(self, desc, pos, snapshots, absorbed))
+			return true
+	return false

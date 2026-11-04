@@ -20,21 +20,7 @@ static func calculate_polygon_vertices(center, radius, sides, rotation_offset = 
 	
 	return vertices
 
-# Calculate polygon vertices for a shape.
-# All shape subtypes (Circle, Square, Pentagon, Hexagon, Octagon, Custom) share
-# a single poly path — the subtype is a UI-only concept that maps to [sides].
-# [sides] = 64 produces a smooth circle approximation.
-#
-# center:    Center position in world space
-# radius:    Circumradius in pixels
-# sides:     Number of polygon sides
-# angle_rad: Rotation in radians
-static func calculate_shape_vertices(center, radius, sides: int, angle_rad: float) -> Array:
-	return calculate_polygon_vertices(center, radius, sides, angle_rad)
-
-# Convert a side length to circumradius for a regular n-gon.
-# side:   desired edge length (in grid cells or any consistent unit)
-# n:      number of sides (must be >= 3)
+# Convert side length to circumradius for a regular n-gon (n >= 3).
 static func side_to_circumradius(side: float, n: int) -> float:
 	return side / (2.0 * sin(PI / float(n)))
 
@@ -52,20 +38,7 @@ static func closest_point_on_segment(p: Vector2, a: Vector2, b: Vector2) -> Vect
 		return a
 	return a + ab * clamp((p - a).dot(ab) / len_sq, 0.0, 1.0)
 
-## Returns the distance from [p] to the closest point on segment [a]→[b].
-static func dist_point_to_segment(p: Vector2, a: Vector2, b: Vector2) -> float:
-	return p.distance_to(closest_point_on_segment(p, a, b))
-
-## Returns the perpendicular distance from point [p] to the infinite ray
-## defined by [origin] and normalized [direction].
-static func dist_point_to_ray(p: Vector2, origin: Vector2, direction: Vector2) -> float:
-	var perp = direction.rotated(PI / 2.0)
-	return abs((p - origin).dot(perp))
-
-## Returns the closest point on any edge of [pts] to [p].
-## When [closed] is true (default) the last edge wraps back to pts[0].
-## When [closed] is false, treats [pts] as an open polyline (n-1 edges).
-## [pts] must have at least 2 elements.
+## Returns the nearest point on an open or closed polygon outline.
 static func closest_point_on_polygon_edges(p: Vector2, pts: Array, closed: bool = true) -> Vector2:
 	var best_pt = pts[0]
 	var best_dist_sq = INF
@@ -91,36 +64,19 @@ static func nearest_polygon_vertex(p: Vector2, pts: Array):
 			best_v    = pts[i]
 	return best_v
 
-## Intersects an infinite line (lp + t*ld, ld must be normalised) with segment
-## [a]→[b].  Returns the intersection Vector2, or null if parallel / no hit.
+## Intersects an infinite line with a segment; null means parallel or a miss.
 static func line_intersect_segment(lp: Vector2, ld: Vector2, a: Vector2, b: Vector2):
-	var ab    = b - a
-	var denom = ab.x * ld.y - ab.y * ld.x   # cross(ab, ld)
+	var ab = b - a
+	var denom = ab.x * ld.y - ab.y * ld.x
 	if abs(denom) < 1e-10:
-		return null  # parallel
+		return null
 	var diff = lp - a
-	var s    = (diff.x * ld.y - diff.y * ld.x) / denom  # cross(diff, ld) / cross(ab, ld)
+	var s = (diff.x * ld.y - diff.y * ld.x) / denom
 	if s < -1e-6 or s > 1.0 + 1e-6:
 		return null
 	return a + ab * clamp(s, 0.0, 1.0)
 
-## Intersects an infinite line (lp + t*ld, ld must be normalised) with a circle.
-## Returns an Array of 0, 1, or 2 Vector2 intersection points.
-static func line_intersect_circle(lp: Vector2, ld: Vector2, center: Vector2, r: float) -> Array:
-	var to_center  = center - lp
-	var proj       = to_center.dot(ld)
-	var closest    = lp + ld * proj
-	var dist_sq    = (center - closest).length_squared()
-	var r_sq       = r * r
-	if dist_sq > r_sq + 1e-10:
-		return []
-	var half_chord = sqrt(max(0.0, r_sq - dist_sq))
-	if half_chord < 1e-5:
-		return [closest]
-	return [closest - ld * half_chord, closest + ld * half_chord]
-
-# Liang-Barsky line clipping algorithm for a SEGMENT
-# Returns [p1, p2] inside the rect, or empty array [] if outside
+## Clips a segment to a rectangle; returns [] on a miss.
 static func clip_line_segment_to_rect(p1, p2, rect):
 	var x1 = p1.x
 	var y1 = p1.y
@@ -164,46 +120,7 @@ static func clip_line_segment_to_rect(p1, p2, rect):
 		Vector2(x1 + t_max * dx, y1 + t_max * dy)
 	]
 
-# Liang-Barsky line clipping algorithm for a RAY (infinite line in one direction)
-# Returns [p_start, p_end] inside the rect, or null if outside
-# pos: Start point of the ray
-# dir: Direction vector (normalized)
-# rect: Clipping rectangle
-static func clip_ray_to_rect(pos: Vector2, dir: Vector2, rect: Rect2):
-	var x_min = rect.position.x
-	var y_min = rect.position.y
-	var x_max = rect.position.x + rect.size.x
-	var y_max = rect.position.y + rect.size.y
-	
-	var p = [-dir.x, dir.x, -dir.y, dir.y]
-	var q = [pos.x - x_min, x_max - pos.x, pos.y - y_min, y_max - pos.y]
-	
-	var u1 = 0.0 # Start constraint: t >= 0 (Ray starts at pos)
-	var u2 = 1e10 # End constraint: "infinite"
-	
-	for i in range(4):
-		if p[i] == 0:
-			if q[i] < 0:
-				return null # Parallel and outside
-		else:
-			var t = q[i] / p[i]
-			if p[i] < 0:
-				if t > u2: return null
-				if t > u1: u1 = t
-			else:
-				if t < u1: return null
-				if t < u2: u2 = t
-	
-	if u1 > u2:
-		return null
-	
-	var p_start = pos + dir * u1
-	var p_end = pos + dir * u2
-	return [p_start, p_end]
-
-# Calculate geometric intersection of a ray with viewport/rect boundaries
-# Used for previewing infinite lines before they are clipped to map bounds
-# Returns [start, end] where end is on the boundary
+# Clips a ray to a rectangle; a miss returns [origin, origin].
 static func get_ray_to_rect_edge(origin, direction, rect):
 	var t_min = 0.0
 	var t_max = INF
@@ -292,28 +209,7 @@ static func is_point_on_ray(origin, direction, point, threshold_rad = 0.1):
 	
 	return diff < threshold_rad
 
-# Calculate vertices for a thick line segment (rectangle)
-# Used for hit testing or drawing thick lines as polygons
-static func calculate_thick_line_poly(start, end, width):
-	var direction = (end - start).normalized()
-	# Perpendicular vector
-	var normal = Vector2(-direction.y, direction.x) * (width * 0.5)
-	
-	return [
-		start + normal,
-		end + normal,
-		end - normal,
-		start - normal
-	]
-
-# ============================================================================
-# SHAPE CLIPPING UTILITIES
-# Used for "Clip Intersecting Shapes" feature
-# ============================================================================
-
-## Convert a polygon vertex array into the canonical segment format used by
-## clipping functions: Array[{"type":"seg","a":Vector2,"b":Vector2}].
-## The last vertex is connected back to the first (closed polygon).
+# Convert polygon vertices into closed outline segments.
 static func points_to_segs(pts: Array) -> Array:
 	var segs = []
 	var n = pts.size()
@@ -341,82 +237,17 @@ static func segment_segment_intersect(a1: Vector2, a2: Vector2, b1: Vector2, b2:
 ## Returns Array of { "type": "seg", "a": Vector2, "b": Vector2 }.
 ## Each b_shape must be: { "shape_type": "poly", "points": Array<Vector2> }
 static func clip_polygon_against_shapes(poly_pts: Array, b_shapes: Array) -> Array:
-	var result = []
-	var n = poly_pts.size()
-	for i in range(n):
-		var pa = poly_pts[i]
-		var pb = poly_pts[(i + 1) % n]
-		var edge = pb - pa
-		var edge_len_sq = edge.length_squared()
-		if edge_len_sq < 1e-10:
-			continue
+	return _clip_segments(points_to_segs(poly_pts), b_shapes, false)
 
-		# Collect all parametric split positions along this edge
-		var ts = [0.0, 1.0]
-		for b_shape in b_shapes:
-			if b_shape.shape_type == "poly":
-				var m = b_shape.points.size()
-				for j in range(m):
-					var qa = b_shape.points[j]
-					var qb = b_shape.points[(j + 1) % m]
-					var pt = segment_segment_intersect(pa, pb, qa, qb)
-					if pt != null:
-						ts.append(clamp((pt - pa).dot(edge) / edge_len_sq, 0.0, 1.0))
-		ts.sort()
-
-		# Test midpoint of each sub-segment: keep if outside all shapes
-		for k in range(ts.size() - 1):
-			if ts[k + 1] - ts[k] < 1e-6:
-				continue
-			var mid = pa + edge * ((ts[k] + ts[k + 1]) * 0.5)
-			var outside = true
-			for b_shape in b_shapes:
-				if b_shape.shape_type == "poly" and Geometry.is_point_in_polygon(mid, b_shape.points):
-					outside = false
-					break
-			if outside:
-				result.append({"type": "seg", "a": pa + edge * ts[k], "b": pa + edge * ts[k + 1]})
-	return result
-
-## Clip polygon edges against a single container shape, keeping only sub-segments
-## whose midpoint lies INSIDE the container.
-## Returns Array of { "type": "seg", "a": Vector2, "b": Vector2 }.
-## container must be: { "shape_type": "poly", "points": Array<Vector2> }
 static func clip_polygon_inside_shape(poly_pts: Array, container: Dictionary) -> Array:
-	var result = []
-	var n = poly_pts.size()
-	for i in range(n):
-		var pa = poly_pts[i]
-		var pb = poly_pts[(i + 1) % n]
-		var edge = pb - pa
-		var edge_len_sq = edge.length_squared()
-		if edge_len_sq < 1e-10:
-			continue
-		var ts = [0.0, 1.0]
-		if container.shape_type == "poly":
-			var m = container.points.size()
-			for j in range(m):
-				var qa = container.points[j]
-				var qb = container.points[(j + 1) % m]
-				var pt = segment_segment_intersect(pa, pb, qa, qb)
-				if pt != null:
-					ts.append(clamp((pt - pa).dot(edge) / edge_len_sq, 0.0, 1.0))
-		ts.sort()
-		for k in range(ts.size() - 1):
-			if ts[k + 1] - ts[k] < 1e-6:
-				continue
-			var mid = pa + edge * ((ts[k] + ts[k + 1]) * 0.5)
-			if Geometry.is_point_in_polygon(mid, container.points):
-				result.append({"type": "seg", "a": pa + edge * ts[k], "b": pa + edge * ts[k + 1]})
-	return result
+	return _clip_segments(points_to_segs(poly_pts), [container], true)
 
-## Clip an already-split list of {type:"seg"} primitives against [shapes],
-## keeping only the sub-portions whose midpoint lies OUTSIDE all shapes.
-## Used to trim fill lines from one Difference op that bleed into holes made
-## by other Difference ops on the same marker.
 static func clip_primitives_against_shapes(primitives: Array, shapes: Array) -> Array:
 	if shapes.empty():
 		return primitives
+	return _clip_segments(primitives, shapes, false)
+
+static func _clip_segments(primitives: Array, shapes: Array, keep_inside: bool) -> Array:
 	var result = []
 	for prim in primitives:
 		if prim.type == "seg":
@@ -445,25 +276,10 @@ static func clip_primitives_against_shapes(primitives: Array, shapes: Array) -> 
 					if shape.shape_type == "poly" and Geometry.is_point_in_polygon(mid, shape.points):
 						outside = false
 						break
-				if outside:
+				if outside != keep_inside:
 					result.append({"type": "seg", "a": a + edge * ts[k], "b": a + edge * ts[k + 1]})
 	return result
-# ============================================================================
-# SHAPE MERGE UTILITIES
-# Used for "Merge Intersecting Shapes" feature
-# ============================================================================
 
-## Returns the outer union outline of two closed polygons A and B:
-## segments of A whose midpoint is OUTSIDE B,
-## plus segments of B whose midpoint is OUTSIDE A.
-##
-## Special cases:
-##   - Edges intersect (normal merge)  → outer union outline
-##   - A fully inside B                → B's full outline
-##   - B fully inside A                → A's full outline
-##   - No overlap at all               → empty array (caller falls through to normal placement)
-##
-## Returns Array of { "type": "seg", "a": Vector2, "b": Vector2 }.
 static func merge_polygons_outline(pts_a: Array, pts_b: Array) -> Array:
 	if pts_a.empty() or pts_b.empty():
 		return []
@@ -585,6 +401,8 @@ static func merge_polygons_outline(pts_a: Array, pts_b: Array) -> Array:
 ## Returns Array[Vector2] suitable for draw_polyline() / points_to_segs(),
 ## or an empty array if the input is empty.
 static func chain_segments_to_polygon(segs: Array, eps: float = 0.5) -> Array:
+	var eps_sq = max(eps, 0.0) * max(eps, 0.0)
+	# ponytail: greedy chaining remains O(E²); use endpoint buckets if profiling warrants it.
 	if segs.empty():
 		return []
 
@@ -608,9 +426,9 @@ static func chain_segments_to_polygon(segs: Array, eps: float = 0.5) -> Array:
 		for i in range(edges.size()):
 			if edges[i].used:
 				continue
-			if tail.distance_to(edges[i].a) < eps:
+			if tail.distance_squared_to(edges[i].a) < eps_sq:
 				found = i; rev = false; break
-			if tail.distance_to(edges[i].b) < eps:
+			if tail.distance_squared_to(edges[i].b) < eps_sq:
 				found = i; rev = true; break
 		if found == -1:
 			break
@@ -618,7 +436,7 @@ static func chain_segments_to_polygon(segs: Array, eps: float = 0.5) -> Array:
 		poly.append(edges[found].b if not rev else edges[found].a)
 
 	# Drop the closing duplicate if the last point coincides with the first.
-	if poly.size() > 1 and poly[0].distance_to(poly[poly.size() - 1]) < eps:
+	if poly.size() > 1 and poly[0].distance_squared_to(poly[poly.size() - 1]) < eps_sq:
 		poly.pop_back()
 
 	# ── Figure-8 / tangent-touch continuation ───────────────────────────────
@@ -642,10 +460,10 @@ static func chain_segments_to_polygon(segs: Array, eps: float = 0.5) -> Array:
 			for ei in range(edges.size()):
 				if edges[ei].used:
 					continue
-				if pv.distance_to(edges[ei].a) < eps:
+				if pv.distance_squared_to(edges[ei].a) < eps_sq:
 					bridge_poly_idx = pi; bridge_edge_idx = ei; bridge_rev = false
 					break
-				if pv.distance_to(edges[ei].b) < eps:
+				if pv.distance_squared_to(edges[ei].b) < eps_sq:
 					bridge_poly_idx = pi; bridge_edge_idx = ei; bridge_rev = true
 					break
 			if bridge_poly_idx != -1:
@@ -659,23 +477,23 @@ static func chain_segments_to_polygon(segs: Array, eps: float = 0.5) -> Array:
 			sub.append(edges[bridge_edge_idx].b if not bridge_rev else edges[bridge_edge_idx].a)
 			for _j in range(edges.size()):
 				var stail = sub[sub.size() - 1]
-				if stail.distance_to(bridge_pt) < eps:
+				if stail.distance_squared_to(bridge_pt) < eps_sq:
 					break  # sub-loop closed
 				var sf = -1
 				var sr = false
 				for ei in range(edges.size()):
 					if edges[ei].used:
 						continue
-					if stail.distance_to(edges[ei].a) < eps:
+					if stail.distance_squared_to(edges[ei].a) < eps_sq:
 						sf = ei; sr = false; break
-					if stail.distance_to(edges[ei].b) < eps:
+					if stail.distance_squared_to(edges[ei].b) < eps_sq:
 						sf = ei; sr = true; break
 				if sf == -1:
 					break
 				edges[sf].used = true
 				sub.append(edges[sf].b if not sr else edges[sf].a)
 			# Remove closing duplicate of bridge_pt at the end of sub.
-			if sub.size() > 0 and sub[sub.size() - 1].distance_to(bridge_pt) < eps:
+			if sub.size() > 0 and sub[sub.size() - 1].distance_squared_to(bridge_pt) < eps_sq:
 				sub.pop_back()
 			# Insert: bridge_pt is already at bridge_poly_idx;
 			# splice in [sub..., bridge_pt] right after it.
@@ -698,6 +516,8 @@ static func chain_segments_to_polygon(segs: Array, eps: float = 0.5) -> Array:
 ## Returns Array of Array[Vector2].  Each inner array has >= 2 points.
 ## Closing duplicates (first == last within eps) are removed from each chain.
 static func split_segments_into_chains(segs: Array, eps: float = 0.5) -> Array:
+	var eps_sq = max(eps, 0.0) * max(eps, 0.0)
+	# ponytail: greedy chaining remains O(E²); use endpoint buckets if profiling warrants it.
 	if segs.empty():
 		return []
 
@@ -733,9 +553,9 @@ static func split_segments_into_chains(segs: Array, eps: float = 0.5) -> Array:
 			for i in range(edges.size()):
 				if edges[i].used:
 					continue
-				if tail.distance_to(edges[i].a) < eps:
+				if tail.distance_squared_to(edges[i].a) < eps_sq:
 					found = i; rev = false; break
-				if tail.distance_to(edges[i].b) < eps:
+				if tail.distance_squared_to(edges[i].b) < eps_sq:
 					found = i; rev = true;  break
 			if found == -1:
 				break  # No continuation — chain ends here.
@@ -758,9 +578,9 @@ static func split_segments_into_chains(segs: Array, eps: float = 0.5) -> Array:
 			for i in range(edges.size()):
 				if edges[i].used:
 					continue
-				if head.distance_to(edges[i].b) < eps:
+				if head.distance_squared_to(edges[i].b) < eps_sq:
 					found = i; rev = false; break  # edge.b == head → prepend edge.a
-				if head.distance_to(edges[i].a) < eps:
+				if head.distance_squared_to(edges[i].a) < eps_sq:
 					found = i; rev = true;  break  # edge.a == head → prepend edge.b
 			if found == -1:
 				break  # No extension backward — head is a true open end.
@@ -768,7 +588,7 @@ static func split_segments_into_chains(segs: Array, eps: float = 0.5) -> Array:
 			chain.insert(0, edges[found].a if not rev else edges[found].b)
 
 		# Remove closing duplicate (chain loops back to its own start).
-		if chain.size() > 1 and chain[0].distance_to(chain[chain.size() - 1]) < eps:
+		if chain.size() > 1 and chain[0].distance_squared_to(chain[chain.size() - 1]) < eps_sq:
 			chain.pop_back()
 
 		if chain.size() >= 2:

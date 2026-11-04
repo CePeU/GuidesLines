@@ -52,6 +52,16 @@ func test_shape_preserves_modified_primitives_until_clear_clip():
 	assert_eq(marker.get_draw_data(rect, Vector2(10, 10)).primitives.size(), 4)
 
 
+func test_malformed_saved_shape_geometry_does_not_replace_existing_state():
+	var script = load(mod_root.plus_file("scripts/guides/GuideMarker.gd"))
+	var marker = script.new(Vector2(10, 20))
+	var saved = marker.Save()
+	for invalid in [null, {}, [null], [{"a": [1], "b": [2, 3]}],
+			[{"a": ["bad", 1], "b": [2, 3]}], [{"a": [INF, 1], "b": [2, 3]}]]:
+		assert_false(marker.Load({"marker_type": "Shape", "shape_primitives": invalid}))
+		assert_eq_deep(marker.Save(), saved)
+
+
 func test_fill_marker_runs_serialization_and_opacity_workflow():
 	var script = load(mod_root.plus_file("scripts/guides/FillMarker.gd"))
 	var marker = script.new()
@@ -69,3 +79,22 @@ func test_fill_marker_runs_serialization_and_opacity_workflow():
 	assert_eq(restored.color, Color(1, 0, 0, 0.25))
 	restored.update_opacity(0.5)
 	assert_almost_eq(restored.draw_color.a, 0.125, 0.00001)
+
+
+func test_modified_and_empty_shape_outlines_survive_json_and_cache_rebuild():
+	var script = load(mod_root.plus_file("scripts/guides/GuideMarker.gd"))
+	var marker = script.new()
+	marker.marker_type = "Shape"
+	var modified = [{"type": "seg", "a": Vector2(1, 2), "b": Vector2(3, 4)}]
+	var rect = Rect2(-100, -100, 200, 200)
+	for primitives in [modified, []]:
+		marker.set_primitives(primitives)
+		var restored = script.new()
+		restored.Load(JSON.parse(JSON.print(marker.Save())).result)
+		restored.set_property("show_coordinates", true)
+		assert_eq_deep(restored.get_draw_data(rect, Vector2(10, 10)).primitives, primitives)
+		restored.clear_clip()
+		assert_eq(restored.get_draw_data(rect, Vector2(10, 10)).primitives.size(), 6)
+	# Old maps omit primitives and must still regenerate from parameters.
+	marker.Load({"marker_type": "Shape", "shape_sides": 4})
+	assert_eq(marker.get_draw_data(rect, Vector2(10, 10)).primitives.size(), 4)

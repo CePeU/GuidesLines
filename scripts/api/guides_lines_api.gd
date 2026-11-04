@@ -490,14 +490,13 @@ func find_nearest_marker_by_geometry(coords: Vector2, radius: float = 100.0):
 		# Always start with the raw position distance / point
 		var min_dist = marker.position.distance_to(coords)
 		var min_point = marker.position
-		var min_vertex = null  # populated only for Shape/poly and Path
 
 		match marker.marker_type:
 			"Line":
 				var draw_data = marker.get_draw_data(map_rect, cell_size)
 				if draw_data.has("segments"):
 					for seg in draw_data["segments"]:
-						var pt = _closest_point_on_segment(coords, seg[0], seg[1])
+						var pt = GeometryUtils.closest_point_on_segment(coords, seg[0], seg[1])
 						var d = coords.distance_to(pt)
 						if d < min_dist:
 							min_dist = d
@@ -508,17 +507,11 @@ func find_nearest_marker_by_geometry(coords: Vector2, radius: float = 100.0):
 				if draw_data.has("primitives"):
 					for prim in draw_data["primitives"]:
 						if prim.type == "seg":
-							var pt = _closest_point_on_segment(coords, prim.a, prim.b)
+							var pt = GeometryUtils.closest_point_on_segment(coords, prim.a, prim.b)
 							var d = coords.distance_to(pt)
 							if d < min_dist:
 								min_dist = d
 								min_point = pt
-					var vert_pts = []
-					for prim in draw_data["primitives"]:
-						if prim.type == "seg" and not vert_pts.has(prim.a):
-							vert_pts.append(prim.a)
-					if vert_pts.size() > 0:
-						min_vertex = GeometryUtils.nearest_polygon_vertex(coords, vert_pts)
 
 			"Path":
 				var pts = marker.marker_points
@@ -528,18 +521,24 @@ func find_nearest_marker_by_geometry(coords: Vector2, radius: float = 100.0):
 					if d < min_dist:
 						min_dist = d
 						min_point = pt
-					min_vertex = GeometryUtils.nearest_polygon_vertex(coords, pts)
 
 		if min_dist <= nearest_dist:
 			nearest_dist = min_dist
 			nearest_point = min_point
-			nearest_vertex = min_vertex
 			nearest_marker = marker
 
 	if nearest_marker == null:
 		if LOGGER:
 			LOGGER.debug("API: find_nearest_marker_by_geometry — nothing found within radius %.1f of %s" % [radius, str(coords)])
 		return null
+	if nearest_marker.marker_type == "Shape":
+		var vertices = []
+		for prim in nearest_marker.get_primitives():
+			if prim.type == "seg" and not vertices.has(prim.a):
+				vertices.append(prim.a)
+		nearest_vertex = GeometryUtils.nearest_polygon_vertex(coords, vertices)
+	elif nearest_marker.marker_type == "Path" and nearest_marker.marker_points.size() >= 2:
+		nearest_vertex = GeometryUtils.nearest_polygon_vertex(coords, nearest_marker.marker_points)
 	var d = _marker_save_with_pos(nearest_marker)
 	d["point"] = nearest_point
 	d["vertex"] = nearest_vertex
@@ -555,8 +554,7 @@ func find_nearest_marker_by_geometry(coords: Vector2, radius: float = 100.0):
 ## in both directions. Only intersection points that land within [radius] of
 ## [coords] are considered. The nearest such point to [coords] is returned.
 ## Line-type markers are always tested (their segments span the whole map);
-## Shape/Path/Arrow markers are pre-filtered by their position distance to
-## [coords] to skip obviously far markers early.
+## Shape/Path candidates are filtered by actual geometry distance to [coords].
 ##
 ## Returns a Dictionary on success:
 ##   { "point":       Vector2  — world-space intersection point,
@@ -600,31 +598,27 @@ func find_line_intersection(line_from: Vector2, line_to: Vector2, coords: Vector
 				var draw_data = marker.get_draw_data(map_rect, cell_size)
 				if draw_data.has("segments"):
 					for seg in draw_data["segments"]:
-						var pt = _line_intersect_segment(line_from, line_dir, seg[0], seg[1])
+						var pt = GeometryUtils.line_intersect_segment(line_from, line_dir, seg[0], seg[1])
 						if pt != null:
 							candidates.append(pt)
 
 			"Shape":
-				if marker.position.distance_to(coords) > radius:
-					continue
 				var draw_data = marker.get_draw_data(map_rect, cell_size)
 				if draw_data.has("primitives"):
 					for prim in draw_data["primitives"]:
 						if prim.type == "seg":
-							var pt = _line_intersect_segment(line_from, line_dir, prim.a, prim.b)
+							var pt = GeometryUtils.line_intersect_segment(line_from, line_dir, prim.a, prim.b)
 							if pt != null:
 								candidates.append(pt)
 
 			"Path":
-				if marker.position.distance_to(coords) > radius:
-					continue
 				var pts = marker.marker_points
 				if pts.size() >= 2:
 					var edge_count = pts.size() - 1
 					if marker.path_closed:
 						edge_count = pts.size()
 					for i in range(edge_count):
-						var pt = _line_intersect_segment(line_from, line_dir, pts[i], pts[(i + 1) % pts.size()])
+						var pt = GeometryUtils.line_intersect_segment(line_from, line_dir, pts[i], pts[(i + 1) % pts.size()])
 						if pt != null:
 							candidates.append(pt)
 
@@ -692,20 +686,16 @@ func find_nearest_geometry_point(coords: Vector2, radius: float = 100.0):
 				var draw_data = marker.get_draw_data(map_rect, cell_size)
 				if draw_data.has("segments"):
 					for seg in draw_data["segments"]:
-						candidates.append(_closest_point_on_segment(coords, seg[0], seg[1]))
+						candidates.append(GeometryUtils.closest_point_on_segment(coords, seg[0], seg[1]))
 
 			"Shape":
-				if marker.position.distance_to(coords) > radius:
-					continue
 				var draw_data = marker.get_draw_data(map_rect, cell_size)
 				if draw_data.has("primitives"):
 					for prim in draw_data["primitives"]:
 						if prim.type == "seg":
-							candidates.append(_closest_point_on_segment(coords, prim.a, prim.b))
+							candidates.append(GeometryUtils.closest_point_on_segment(coords, prim.a, prim.b))
 
 			"Path":
-				if marker.position.distance_to(coords) > radius:
-					continue
 				var pts = marker.marker_points
 				if pts.size() >= 2:
 					candidates.append(GeometryUtils.closest_point_on_polygon_edges(coords, pts, marker.path_closed))
@@ -738,73 +728,59 @@ func find_nearest_geometry_point(coords: Vector2, radius: float = 100.0):
 
 ## Enables or disables the proximity cross-guide overlay.
 func set_cross_guides(enabled: bool) -> void:
-	_mod.cross_guides_enabled = enabled
-	emit_signal("settings_changed", "cross_guides", enabled)
-	if LOGGER:
-		LOGGER.debug("API: cross_guides = %s" % [str(enabled)])
+	_mod._on_cross_guides_toggled(enabled)
 
 ## Enables or disables the permanent vertical center line.
 func set_permanent_vertical(enabled: bool) -> void:
-	_mod.perm_vertical_enabled = enabled
-	_mod._on_perm_guide_changed(enabled)
-	emit_signal("settings_changed", "perm_vertical", enabled)
-	if LOGGER:
-		LOGGER.debug("API: perm_vertical = %s" % [str(enabled)])
+	_mod._on_perm_vertical_toggled(enabled)
 
 ## Enables or disables the permanent horizontal center line.
 func set_permanent_horizontal(enabled: bool) -> void:
-	_mod.perm_horizontal_enabled = enabled
-	_mod._on_perm_guide_changed(enabled)
-	emit_signal("settings_changed", "perm_horizontal", enabled)
-	if LOGGER:
-		LOGGER.debug("API: perm_horizontal = %s" % [str(enabled)])
+	_mod._on_perm_horizontal_toggled(enabled)
 
-## Enables or disables coordinate display on new markers.
+## Legacy setter: changes both permanent-guide and new-marker coordinate labels.
 func set_show_coordinates(enabled: bool) -> void:
-	_mod.show_coordinates_enabled = enabled
+	# Legacy combined setter: permanent labels and new-marker labels.
+	_mod._on_perm_coordinates_toggled(enabled)
 	if _has_tool():
 		_tool().set_show_coordinates(enabled)
-	emit_signal("settings_changed", "show_coordinates", enabled)
-	if LOGGER:
-		LOGGER.debug("API: show_coordinates = %s" % [str(enabled)])
 
-## Shows or hides all placed markers on the map.
+## Sets only permanent-guide coordinate labels.
+func set_permanent_coordinates(enabled: bool) -> void:
+	_mod._on_perm_coordinates_toggled(enabled)
+
+## Sets only coordinate labels on new Line markers.
+func set_marker_coordinates(enabled: bool) -> void:
+	if _has_tool():
+		_tool().set_show_coordinates(enabled)
+
+## Shows or hides all placed markers; synchronizes the tool checkbox.
 func set_markers_visible(enabled: bool) -> void:
-	_mod.markers_visible = enabled
-	if _has_tool() and _tool().overlay:
-		_tool().overlay.update()
-	emit_signal("settings_changed", "markers_visible", enabled)
-	if LOGGER:
-		LOGGER.debug("API: markers_visible = %s" % [str(enabled)])
+	_mod._on_markers_visible_toggled(enabled)
 
-## Returns true if placed markers are currently visible.
 func get_markers_visible() -> bool:
 	return _mod.markers_visible
 
 ## Sets the global opacity for all placed markers (0.0 = fully transparent, 1.0 = fully opaque).
+## Sets global marker opacity in [0, 1]. Non-finite inputs are ignored.
 func set_markers_opacity(value: float) -> void:
-	_mod.markers_opacity = clamp(value, 0.0, 1.0)
-	if _has_tool():
-		_tool()._apply_opacity_to_all(_mod.markers_opacity)
-		if _tool().overlay:
-			_tool().overlay.update()
-	emit_signal("settings_changed", "markers_opacity", _mod.markers_opacity)
-	if LOGGER:
-		LOGGER.debug("API: markers_opacity = %.2f" % [_mod.markers_opacity])
+	_mod._on_markers_opacity_changed(value)
 
-## Returns the current global opacity of all placed markers (0.0–1.0).
 func get_markers_opacity() -> float:
 	return _mod.markers_opacity
 
 ## Returns a snapshot of all current overlay/display settings.
 ## Dict keys: "cross_guides", "perm_vertical", "perm_horizontal",
 ##            "show_coordinates", "markers_visible", "markers_opacity"
+## show_coordinates is the legacy permanent-guide flag; marker_coordinates is
+## the independent flag for labels on new Line markers.
 func get_settings() -> Dictionary:
 	return {
 		"cross_guides": _mod.cross_guides_enabled,
 		"perm_vertical": _mod.perm_vertical_enabled,
 		"perm_horizontal": _mod.perm_horizontal_enabled,
-		"show_coordinates": _mod.show_coordinates_enabled,
+		"show_coordinates": _mod.show_coordinates_enabled, # Legacy permanent-label key
+		"marker_coordinates": _tool().show_coordinates if _tool() else false,
 		"markers_visible": _mod.markers_visible,
 		"markers_opacity": _mod.markers_opacity,
 	}
@@ -1043,6 +1019,12 @@ func get_tool_state() -> Dictionary:
 		"conforming_mode":          t.conforming_mode,
 		"wrapping_mode":            t.wrapping_mode,
 		"difference_mode":          t.difference_mode,
+		"cut_mode":                 t.cut_mode,
+		"move_mode":                t.move_mode,
+		"active_shape_size_mode":   t.active_shape_size_mode,
+		"active_shape_side":        t.active_shape_side,
+		"active_template_index":    t.active_template_index,
+		"template_capture_mode":    t.template_capture_mode,
 		"marker_count":             t.markers.size(),
 		"fill_count":               t.fills.size(),
 		"path_placement_active":    t.path_placement_active,
@@ -1077,21 +1059,3 @@ func _marker_save_with_pos(marker) -> Dictionary:
 	var d = marker.Save()
 	d["position"] = marker.position
 	return d
-
-## Returns the perpendicular distance from point [p] to the infinite ray
-## defined by [origin] and normalized [direction].
-func _dist_point_to_ray(p: Vector2, origin: Vector2, direction: Vector2) -> float:
-	return GeometryUtils.dist_point_to_ray(p, origin, direction)
-
-## Returns the distance from point [p] to the closest point on segment [a]→[b].
-func _dist_point_to_segment(p: Vector2, a: Vector2, b: Vector2) -> float:
-	return GeometryUtils.dist_point_to_segment(p, a, b)
-
-## Returns the closest point on segment [a]→[b] to point [p].
-func _closest_point_on_segment(p: Vector2, a: Vector2, b: Vector2) -> Vector2:
-	return GeometryUtils.closest_point_on_segment(p, a, b)
-
-## Intersects an infinite line (lp + t*ld, ld must be normalised) with segment
-## [a]→[b].  Returns the intersection Vector2 or null if parallel / miss.
-func _line_intersect_segment(lp: Vector2, ld: Vector2, a: Vector2, b: Vector2):
-	return GeometryUtils.line_intersect_segment(lp, ld, a, b)

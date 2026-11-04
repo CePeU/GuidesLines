@@ -57,8 +57,9 @@ and recursively under `scripts/`, loads them with Godot and checks
 entry or `load_only` reason. Unclassified new sources fail.
 
 The inventory contains 14 scripts; 13 constructors execute off-tree. Owned Nodes
-are freed. `GuidesLinesTool` remains load-only because its constructor creates
-mutually referencing collaborators and needs a dedicated isolated cleanup test.
+are freed. `GuidesLinesTool` remains load-only in this generic inventory because
+its constructor creates mutually referencing collaborators. `test_tool_history.gd`
+constructs the real tool and explicitly breaks those cycles after each test.
 Constructing the outer history script does not exercise nested record classes.
 
 For entries listed in `injected_globals`, the suite prepends `var Global = {}`
@@ -72,8 +73,26 @@ JSON/required fields and listed icon files. Resource existence does not prove
 rendering or asset decoding.
 
 `test_marker_lifecycle.gd` exercises creation, Save, JSON encoding/decoding, Load
-and opacity updates. It verifies Line/Shape/Path round trips and preservation of
-modified Shape primitives until `clear_clip()`.
+and opacity updates. It verifies Line/Shape/Path round trips, JSON preservation of
+modified and explicitly empty Shape outlines, rejection of malformed saved
+primitives without replacing existing state, and reset through `clear_clip()`.
+
+`test_tool_history.gd` exercises original tool/history/API code for delete undo,
+delete-all undo, rotated template redo, conforming redo after UI settings change,
+Cut/Merge metadata restoration, merge deletion signals, distant Shape/Path edges,
+the wrapping result contract, hex side sizing callbacks and tool-state fields.
+Host collaborators are dictionaries; these tests do not validate Dungeondraft's
+HistoryApi, map persistence, rendering or the installed Snappy mod.
+
+`test_audit_regressions.gd` checks original entry/tool/UI/API code with real Godot
+controls for setting synchronization, event counts and panel replacement. It also
+covers shared clipping, Shape/Template mode equivalence, polygon-cache transitions,
+snapshot wrappers, epsilon boundaries, nearest vertices, coordinate-axis generation
+and redraw invalidation. `helpers/draw_probe.gd` records original render commands
+and supplies controlled square snapping. A separate two-Viewport test compares
+the actual rendered pixels of old and optimized text outlines. These renderer
+checks require a working Godot graphics backend; they do not exercise the embedded
+Dungeondraft renderer or its installed mods.
 
 `test_runtime_contracts.gd` checks API placement failures before tool initialization,
 adaptive width and original `start()` without `_Lib`, followed by `update()` with
@@ -117,5 +136,9 @@ test root; Godot clamps `res://..` preload paths. Use independently known
 expectations, numeric tolerances and deep dictionary assertions. Parameterized
 tests or inner classes require updated expected-case discovery in `run.py`.
 
-The suite contains 22 tests / 444 assertions. Keep generated dependencies and
+The suite contains 50 tests / 726 assertions. Two obsolete circle/ray helper tests
+were retired with their unused implementations; active ray clipping is covered
+by the map/preview checks. Keep generated dependencies and
 reports out of source control and test files out of runtime distribution archives.
+
+See [AUDIT.md](AUDIT.md) for the reviewed findings and remaining work.

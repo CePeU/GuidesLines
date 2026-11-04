@@ -398,37 +398,9 @@ func _draw_custom_marker(marker, world_left, world_right, world_top, world_botto
 					draw_line(item.a, item.b, line_color, LINE_WIDTH)
 
 
-	
 	elif marker.marker_type == "Path":
-		# Draw path lines
-		if marker.marker_points.size() >= 2:
-			for i in range(marker.marker_points.size() - 1):
-				draw_line(
-					marker.marker_points[i],
-					marker.marker_points[i + 1],
-					line_color,
-					LINE_WIDTH
-				)
-			
-			# Close path if enabled
-			if marker.path_closed and marker.marker_points.size() >= 3:
-				draw_line(
-					marker.marker_points[marker.marker_points.size() - 1],
-					marker.marker_points[0],
-					line_color,
-					LINE_WIDTH
-				)
-			
-			# Draw arrowhead at last point if enabled
-			if marker.path_end_arrow:
-				var arrow_from = marker.marker_points[marker.marker_points.size() - 2]
-				var arrow_to = marker.marker_points[marker.marker_points.size() - 1]
-				var arrow_length = GuidesLinesRender.get_adaptive_width(marker.arrow_head_length, cam_zoom)
-				var head_points = GeometryUtils.calculate_arrowhead_points(arrow_to, arrow_from, arrow_length, marker.arrow_head_angle)
-				GuidesLinesRender.draw_arrow(self, arrow_from, arrow_to, head_points, line_color, LINE_WIDTH)
+		_draw_path_points(marker.marker_points, marker.path_closed, marker.path_end_arrow, marker.arrow_head_length, marker.arrow_head_angle, cam_zoom, line_color, LINE_WIDTH)
 
-
-	
 	# Draw marker circle on top (only if marker is visible on screen)
 	# Optimized visibility check using Godot's built-in Rect2 methods if possible, 
 	# but simple AABB check is fast enough.
@@ -436,8 +408,7 @@ func _draw_custom_marker(marker, world_left, world_right, world_top, world_botto
 	                        marker.position.y >= world_top and marker.position.y <= world_bottom
 	
 	if is_marker_visible:
-		draw_circle(marker.position, MARKER_SIZE / 2.0, MARKER_COLOR)
-		draw_arc(marker.position, MARKER_SIZE / 2.0, 0, TAU, 32, marker.draw_arc_color, 2)
+		_draw_marker_anchor(marker.position, MARKER_SIZE, MARKER_COLOR, marker.draw_arc_color)
 	
 	# Draw coordinates if enabled for this marker
 	if marker.show_coordinates:
@@ -464,10 +435,9 @@ func _draw_api_shape_preview(p: Dictionary, cam_zoom: Vector2, cell_size, previe
 	var color  = p.get("color",  Color(0, 0.7, 1, 0.5))
 	var radius_px = radius * min(cell_size.x, cell_size.y)
 	var angle_rad = deg2rad(angle)
-	var vertices  = GeometryUtils.calculate_shape_vertices(pos, radius_px, sides, angle_rad)
+	var vertices  = GeometryUtils.calculate_polygon_vertices(pos, radius_px, sides, angle_rad)
 	GuidesLinesRender.draw_polygon_outline(self, vertices, color, preview_line_width)
-	draw_circle(pos, preview_marker_size / 2.0, Color(color.r, color.g, color.b, 0.5))
-	draw_arc(pos, preview_marker_size / 2.0, 0, TAU, 32, Color(0, 0, 0, 0.5), 2)
+	_draw_marker_anchor(pos, preview_marker_size, Color(color.r, color.g, color.b, 0.5), _PREVIEW_ARC_COLOR)
 
 # Draw semi-transparent preview of marker at cursor position
 func _draw_custom_marker_preview(pos, world_left, world_right, world_top, world_bottom, cam_zoom, map_rect, cell_size, preview_line_width: float, preview_marker_size: float):
@@ -510,13 +480,12 @@ func _draw_custom_marker_preview(pos, world_left, world_right, world_top, world_
 		if cell_size:
 			var radius_px = tool.active_shape_radius * min(cell_size.x, cell_size.y)
 			var angle_rad = deg2rad(tool.active_shape_angle)
-			var vertices = GeometryUtils.calculate_shape_vertices(pos, radius_px, tool.active_shape_sides, angle_rad)
+			var vertices = GeometryUtils.calculate_polygon_vertices(pos, radius_px, tool.active_shape_sides, angle_rad)
 			GuidesLinesRender.draw_polygon_outline(self, vertices, LINE_COLOR, LINE_WIDTH)
 
 	
 	# Draw preview marker
-	draw_circle(pos, MARKER_SIZE / 2.0, MARKER_COLOR)
-	draw_arc(pos, MARKER_SIZE / 2.0, 0, TAU, 32, _PREVIEW_ARC_COLOR, 2)
+	_draw_marker_anchor(pos, MARKER_SIZE, MARKER_COLOR, _PREVIEW_ARC_COLOR)
 
 # Draw semi-transparent preview of the selected template at cursor position.
 func _draw_template_preview(preview_pos: Vector2, world_left: float, world_right: float, world_top: float, world_bottom: float, cam_zoom: Vector2, map_rect: Rect2, cell_size, preview_line_width: float, preview_marker_size: float) -> void:
@@ -557,7 +526,7 @@ func _draw_template_preview(preview_pos: Vector2, world_left: float, world_right
 				var radius_px = data.get("shape_radius", 1.0) * min(cell_size.x, cell_size.y)
 				var eff_angle = fmod(data.get("shape_angle", 0.0) + tool.template_rotation_offset, 360.0)
 				var angle_rad = deg2rad(eff_angle)
-				var vertices  = GeometryUtils.calculate_shape_vertices(preview_pos, radius_px, data.get("shape_sides", 6), angle_rad)
+				var vertices  = GeometryUtils.calculate_polygon_vertices(preview_pos, radius_px, data.get("shape_sides", 6), angle_rad)
 				GuidesLinesRender.draw_polygon_outline(self, vertices, line_color, LINE_WIDTH)
 		"Path":
 			var rel_pts = data.get("relative_points", [])
@@ -566,19 +535,9 @@ func _draw_template_preview(preview_pos: Vector2, world_left: float, world_right
 				var pts = []
 				for rp in rel_pts:
 					pts.append(preview_pos + rp.rotated(rot_rad))
-				for i in range(pts.size() - 1):
-					draw_line(pts[i], pts[i + 1], line_color, LINE_WIDTH)
-				if data.get("path_closed", false) and pts.size() >= 3:
-					draw_line(pts[pts.size() - 1], pts[0], line_color, LINE_WIDTH)
-				if data.get("path_end_arrow", false) and pts.size() >= 2:
-					var arrow_from  = pts[pts.size() - 2]
-					var arrow_to    = pts[pts.size() - 1]
-					var arrow_len   = GuidesLinesRender.get_adaptive_width(data.get("arrow_head_length", 50.0), cam_zoom)
-					var head_points = GeometryUtils.calculate_arrowhead_points(arrow_to, arrow_from, arrow_len, data.get("arrow_head_angle", 30.0))
-					GuidesLinesRender.draw_arrow(self, arrow_from, arrow_to, head_points, line_color, LINE_WIDTH)
+				_draw_path_points(pts, data.get("path_closed", false), data.get("path_end_arrow", false), data.get("arrow_head_length", 50.0), data.get("arrow_head_angle", 30.0), cam_zoom, line_color, LINE_WIDTH)
 
-	draw_circle(preview_pos, MARKER_SIZE / 2.0, marker_color)
-	draw_arc(preview_pos, MARKER_SIZE / 2.0, 0, TAU, 32, arc_color, 2)
+	_draw_marker_anchor(preview_pos, MARKER_SIZE, marker_color, arc_color)
 
 # Draw the selected marker semi-transparently at the dragged position during Move Mode.
 func _draw_move_drag_preview(marker, drag_pos: Vector2, world_left, world_right, world_top, world_bottom, cam_zoom, map_rect: Rect2, cell_size, custom_snap, preview_line_width: float, preview_marker_size: float):
@@ -599,11 +558,10 @@ func _draw_move_drag_preview(marker, drag_pos: Vector2, world_left, world_right,
 				draw_line(line_points[0], line_points[1], line_color, LINE_WIDTH)
 
 	elif marker.marker_type == "Shape":
-		if cell_size:
-			var radius_px = marker.shape_radius * min(cell_size.x, cell_size.y)
-			var angle_rad = deg2rad(marker.shape_angle)
-			var vertices  = GeometryUtils.calculate_shape_vertices(drag_pos, radius_px, marker.shape_sides, angle_rad)
-			GuidesLinesRender.draw_polygon_outline(self, vertices, line_color, LINE_WIDTH)
+		var offset = drag_pos - marker.position
+		var data = marker.get_draw_data(map_rect, cell_size)
+		for seg in data.get("primitives", []):
+			draw_line(seg.a + offset, seg.b + offset, line_color, LINE_WIDTH)
 
 	elif marker.marker_type == "Path":
 		if marker.marker_points.size() >= 2:
@@ -611,19 +569,9 @@ func _draw_move_drag_preview(marker, drag_pos: Vector2, world_left, world_right,
 			var pts = []
 			for p in marker.marker_points:
 				pts.append(p + offset)
-			for i in range(pts.size() - 1):
-				draw_line(pts[i], pts[i + 1], line_color, LINE_WIDTH)
-			if marker.path_closed and pts.size() >= 3:
-				draw_line(pts[pts.size() - 1], pts[0], line_color, LINE_WIDTH)
-			if marker.path_end_arrow:
-				var arrow_from = pts[pts.size() - 2]
-				var arrow_to   = pts[pts.size() - 1]
-				var arrow_length = GuidesLinesRender.get_adaptive_width(marker.arrow_head_length, cam_zoom)
-				var head_points = GeometryUtils.calculate_arrowhead_points(arrow_to, arrow_from, arrow_length, marker.arrow_head_angle)
-				GuidesLinesRender.draw_arrow(self, arrow_from, arrow_to, head_points, line_color, LINE_WIDTH)
+			_draw_path_points(pts, marker.path_closed, marker.path_end_arrow, marker.arrow_head_length, marker.arrow_head_angle, cam_zoom, line_color, LINE_WIDTH)
 
-	draw_circle(drag_pos, MARKER_SIZE / 2.0, marker_color)
-	draw_arc(drag_pos, MARKER_SIZE / 2.0, 0, TAU, 32, arc_color, 2)
+	_draw_marker_anchor(drag_pos, MARKER_SIZE, marker_color, arc_color)
 
 # Draw preview for Path type (temp points + line to cursor)
 func _draw_path_preview(world_left, world_right, world_top, world_bottom, cam_zoom, preview_line_width: float, preview_marker_size: float, active_arrow_length_px: float):
@@ -694,22 +642,9 @@ func _draw_path_preview(world_left, world_right, world_top, world_bottom, cam_zo
 func _calculate_line_endpoints(origin, angle_deg, world_left, world_right, world_top, world_bottom, map_rect):
 	var angle_rad = deg2rad(angle_deg)
 	var direction = Vector2(cos(angle_rad), sin(angle_rad))
-	
-	# Always draw infinite ray from origin to viewport edge
-	# Create a Rect2 for the viewport/world bounds
-	var viewport_rect = Rect2(world_left, world_top, world_right - world_left, world_bottom - world_top)
-	var viewport_points = GeometryUtils.get_ray_to_rect_edge(origin, direction, viewport_rect)
-	
-	# Clip the line segment to map boundaries
-	if map_rect:
-		var clipped = GeometryUtils.clip_line_segment_to_rect(viewport_points[0], viewport_points[1], map_rect)
-		if clipped.size() == 2:
-			return clipped
-		return [viewport_points[0], viewport_points[0]] # Return degenerate line if clipped out
-	else:
-		return viewport_points
+	var bounds = map_rect if map_rect else Rect2(world_left, world_top, world_right - world_left, world_bottom - world_top)
+	return GeometryUtils.get_ray_to_rect_edge(origin, direction, bounds)
 
-# Get custom_snap mod reference if available
 func _get_custom_snap():
 	if not tool:
 		return null
@@ -737,3 +672,20 @@ func _draw_marker_coordinates_cached(marker, marker_size: float, text_offset: fl
 func _draw_text_with_outline(text, position, color):
 	GuidesLinesRender.draw_text_with_outline(self, text, position, color, _cached_font)
 
+
+func _draw_marker_anchor(pos: Vector2, size: float, fill_color: Color, arc_color: Color) -> void:
+	draw_circle(pos, size / 2.0, fill_color)
+	draw_arc(pos, size / 2.0, 0, TAU, 32, arc_color, 2)
+
+func _draw_path_points(points: Array, closed: bool, end_arrow: bool, arrow_length: float, arrow_angle: float, zoom: Vector2, color: Color, width: float) -> void:
+	if points.size() < 2:
+		return
+	for index in range(points.size() - 1):
+		draw_line(points[index], points[index + 1], color, width)
+	if closed and points.size() >= 3:
+		draw_line(points[points.size() - 1], points[0], color, width)
+	if end_arrow:
+		var start = points[points.size() - 2]
+		var end = points[points.size() - 1]
+		var head = GeometryUtils.calculate_arrowhead_points(end, start, GuidesLinesRender.get_adaptive_width(arrow_length, zoom), arrow_angle)
+		GuidesLinesRender.draw_arrow(self, start, end, head, color, width)
