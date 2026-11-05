@@ -343,6 +343,14 @@ var hit = gl.find_line_intersection(line_a, line_b, cursor_pos, 80.0)
 # Returns: { point, distance, on_positive, marker_id, marker_type, ... }
 ```
 
+`get_shape_state()` returns a fresh snapshot containing `ready`,
+`active_shape_radius` (grid cells), `active_shape_angle` (degrees),
+`active_shape_sides` and `active_color`. Before initialization it returns
+`{"ready": false}`. It is suitable for polling shape previews each frame;
+consumers supporting older versions can fall back to `get_tool_state()` when
+`has_method("get_shape_state")` is false. Continue calling `set_shape_preview()`
+every frame to keep a preview alive, and `clear_shape_preview()` when leaving it.
+
 **Signals:**
 ```gdscript
 gl.connect("marker_placed", self, "_on_marker_placed")  # (marker_id, position)
@@ -446,7 +454,15 @@ gl.connect("marker_deleted", self, "_on_marker_deleted") # (marker_id)
 7. **GuidesLinesApi** — External API
    - Signals: `marker_placed`, `marker_deleted`, `all_markers_deleted`, `settings_changed`
    - Placement: `place_line_marker()`, `place_shape_marker()`, `place_path_marker()`, `place_arrow_marker()`
+   - Explicit plain Shape: `place_shape_marker_plain(position, radius, angle, sides, color)`
+     ignores active Conform/Wrap modes without changing the user's mode settings.
    - Deletion: `delete_marker()`, `delete_all_markers()`
+   - Compound history: `begin_history_capture()` / `end_history_capture()` capture
+     synchronous edits for a caller-owned history record. Reject nested capture,
+     never yield between calls, and always end a successful capture, including on
+     failure. Undo returned records in reverse order; redo in execution order.
+     The caller must record the compound action or roll it back. This addition is
+     currently unreleased; detect both methods before starting edits.
    - Queries: `get_markers()`, `get_marker()`, `find_nearest_marker()`, `find_nearest_marker_by_geometry()`, `find_nearest_geometry_point()`, `find_line_intersection()`
    - Settings: `set_cross_guides()`, `set_permanent_vertical/horizontal()`, `get_settings()`
 

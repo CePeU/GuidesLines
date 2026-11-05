@@ -5,6 +5,27 @@ All notable changes to the Guides Lines mod will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.2]
+
+### Fixed
+- Reject incomplete parametric Shape templates and descriptors instead of fabricating
+  radius, angle or sides. Validate position and finite shape parameters before geometry.
+- Test setup requires the local pinned GUT checkout instead of downloading it implicitly.
+
+### Changed
+- Pass conform/wrap placement policies explicitly through API and history replay,
+  preserving the live UI flags throughout callbacks.
+- Reuse API preview storage while preserving per-frame refresh and expiry behavior.
+
+### Added
+- Public `get_shape_state()` returns an independent five-key shape snapshot for
+  preview consumers without allocating the full tool state.
+- Public `place_shape_marker_plain()` places a full Shape independently of active
+  Conform/Wrap modes, preserving those settings and neighboring markers on replay.
+- Public `begin_history_capture()` / `end_history_capture()` API for synchronous
+  compound operations such as BuildingPlanner rooms. Captured original records
+  retain marker IDs and boolean geometry snapshots without separate undo steps.
+
 ## [2.4.1] — 2026-11-04
 
 ### Changed
@@ -872,6 +893,8 @@ No public API signatures were changed.
 - Rotation controls (scroll wheel, RMB +45°) work unchanged for the Custom subtype.
 
 ### Fixed
+- History capture protocol violations report diagnostics. Virtual shape descriptors
+  require an explicit radius instead of reading the current UI radius.
 - Fixed `match` block in `GuideMarker._recalculate_geometry()`: the `"Custom"` branch was incorrectly indented outside the `match` statement, causing a crash on placement. Also restored the missing `cached_draw_data["points"] = ...` call that had been lost in the same block.
 
 ## [2.0.9] - 2026-02-19

@@ -51,6 +51,107 @@ func add_shape(id, pos = Vector2.ZERO):
 	return marker
 
 
+func test_api_history_capture_keeps_original_records_and_rejects_nesting():
+	last_record = null
+	assert_true(api.begin_history_capture())
+	assert_false(api.begin_history_capture())
+	var id = api.place_shape_marker(Vector2.ZERO, 1.0, 0.0, 4)
+	assert_true(id >= 0)
+	assert_true(api.delete_marker(id))
+	assert_null(last_record, "Captured edits must not create independent undo steps")
+	var records = api.end_history_capture()
+	assert_eq(records.size(), 2)
+	assert_eq_deep(api.end_history_capture(), [])
+	for i in range(records.size() - 1, -1, -1):
+		records[i].undo()
+	assert_eq(api.get_marker_count(), 0)
+	for action in records:
+		action.redo()
+	assert_eq(api.get_marker_count(), 0, "Temporary placement/deletion replays without leftover markers")
+	assert_true(api.begin_history_capture())
+	var kept_id = api.place_shape_marker(Vector2(500, 500), 1.0, 0.0, 4)
+	var kept = api.end_history_capture()
+	kept[0].undo()
+	assert_null(api.get_marker(kept_id))
+	kept[0].redo()
+	assert_eq(api.get_marker(kept_id).id, kept_id)
+	api.place_shape_marker(Vector2(1000, 1000), 1.0, 0.0, 4)
+	assert_true(last_record != null, "Normal recording resumes after capture")
+
+
+func test_plain_shape_placement_ignores_boolean_modes_and_preserves_them_on_replay():
+	for modes in [[true, false], [false, true], [true, true]]:
+		tool.markers.clear()
+		tool.markers_lookup.clear()
+		tool.conforming_mode = false
+		tool.wrapping_mode = false
+		tool.next_id = 1000
+		add_shape(100)
+		var before = api.get_marker(100)
+		tool.conforming_mode = modes[0]
+		tool.wrapping_mode = modes[1]
+		assert_true(api.begin_history_capture())
+		var id = api.place_shape_marker_plain(Vector2(50, 0), 1.0, 0.0, 4)
+		var actions = api.end_history_capture()
+		assert_eq(actions.size(), 1)
+		assert_false(actions[0].conforming)
+		assert_false(actions[0].wrapping)
+		for _cycle in range(3):
+			assert_eq_deep(api.get_marker(100), before)
+			var polygon = api.get_shape_polygon(id).polygon
+			assert_eq(polygon.size(), 4)
+			for point in polygon:
+				assert_almost_eq(point.distance_to(Vector2(50, 0)), 100.0, 0.001)
+			assert_eq(tool.conforming_mode, modes[0])
+			assert_eq(tool.wrapping_mode, modes[1])
+			actions[0].undo()
+			assert_null(api.get_marker(id))
+			actions[0].redo()
+		# The original API keeps its existing mode inheritance contract.
+		api.place_shape_marker(Vector2(1000, 0), 1.0, 0.0, 4)
+		assert_eq(last_record.conforming, modes[0])
+		assert_eq(last_record.wrapping, modes[1])
+
+
+func test_identical_merge_reports_existing_survivor_without_placing_a_duplicate():
+	add_shape(100)
+	var before = api.get_marker(100)
+	var result = api.place_shape_merge(Vector2.ZERO, 2.0, 45.0, 4)
+	assert_eq(result.affected_markers.size(), 1)
+	assert_eq(result.affected_markers[0].marker_id, 100)
+	assert_true(result.absorbed_marker_ids.empty())
+	assert_eq(api.get_marker_count(), 1)
+	assert_eq_deep(api.get_marker(100), before)
+
+
+func marker_state():
+	var state = {}
+	for marker in api.get_markers():
+		state[marker.id] = marker
+	return state
+
+
+func test_captured_boolean_operations_restore_original_geometry_and_marker_ids():
+	for method in ["place_shape_merge", "place_shape_conforming", "place_shape_wrapping", "apply_shape_difference"]:
+		tool.markers.clear()
+		tool.markers_lookup.clear()
+		tool.next_id = 1000
+		add_shape(100)
+		add_shape(101, Vector2(300, 0))
+		var before = marker_state()
+		assert_true(api.begin_history_capture())
+		var result = api.call(method, Vector2(150, 0), 2.0, 45.0, 4)
+		assert_false(result.empty())
+		var actions = api.end_history_capture()
+		assert_eq(actions.size(), 1)
+		var after = marker_state()
+		for _cycle in range(2):
+			actions[0].undo()
+			assert_eq_deep(marker_state(), before)
+			actions[0].redo()
+			assert_eq_deep(marker_state(), after)
+
+
 func test_shared_nearest_queries_keep_anchor_edge_and_tie_contracts():
 	var marker = add_shape(1)
 	marker.set_primitives([
@@ -480,7 +581,7 @@ func test_virtual_descriptors_match_model_without_instantiating_markers():
 	assert_eq_deep(tool._get_shape_descriptor_from_marker_data(data), {})
 	data.erase("shape_primitives")
 	data.erase("shape_sides")
-	assert_eq(tool._get_shape_descriptor_from_marker_data(data).points.size(), 6)
+	assert_eq_deep(tool._get_shape_descriptor_from_marker_data(data), {})
 	tool.active_shape_radius = 3.0
 	tool.active_shape_sides = 5
 	tool.active_shape_angle = -90.0
@@ -488,3 +589,95 @@ func test_virtual_descriptors_match_model_without_instantiating_markers():
 	tool.templates = [{"data": {"marker_type": "Shape", "shape_radius": 3.0, "shape_sides": 5, "shape_angle": -90.0}}]
 	tool.active_template_index = 0
 	assert_eq_deep(tool._build_shape_descriptor_from_template(marker.position), expected)
+
+
+class DiagnosticLogger:
+	extends Reference
+	var errors = []
+	func error(message):
+		errors.append(message)
+
+
+func test_capture_protocol_and_missing_descriptor_radius_report_errors():
+	var logger = DiagnosticLogger.new()
+	api.LOGGER = logger
+	assert_eq_deep(api.end_history_capture(), [])
+	assert_eq(logger.errors.size(), 1)
+	assert_true(api.begin_history_capture())
+	assert_false(api.begin_history_capture())
+	assert_eq(logger.errors.size(), 2)
+	api.end_history_capture()
+	api.LOGGER = null # Teardown uses normal lifecycle logging.
+	tool.LOGGER = logger
+	var data = shape_data(1)
+	data.erase("shape_radius")
+	tool.active_shape_radius = 123.0
+	assert_eq_deep(tool._get_shape_descriptor_from_marker_data(data), {})
+	assert_eq(logger.errors.size(), 3)
+	assert_true("shape_radius" in logger.errors.back())
+	tool.LOGGER = null
+
+
+func test_corrupt_parametric_templates_cannot_bypass_descriptor_validation():
+	var logger = DiagnosticLogger.new()
+	tool.LOGGER = logger
+	var valid = {"marker_type": "Shape", "shape_radius": 3.0, "shape_sides": 5, "shape_angle": 0.0}
+	tool.active_template_index = 0
+	for field in ["shape_radius", "shape_sides", "shape_angle"]:
+		var data = valid.duplicate()
+		data.erase(field)
+		tool.templates = [{"data": data}]
+		assert_eq_deep(tool._build_shape_descriptor_from_template(Vector2.ZERO), {})
+		var count = tool.markers.size()
+		tool._place_template_marker(Vector2.ZERO)
+		assert_eq(tool.markers.size(), count)
+	assert_eq(logger.errors.size(), 6)
+	for value in [null, "bad", Vector2(INF, 0)]:
+		var data = shape_data(1)
+		data.position = value
+		assert_eq_deep(tool._get_shape_descriptor_from_marker_data(data), {})
+	tool.LOGGER = null
+
+
+class PlacementModeObserver:
+	extends Reference
+	var tool
+	var seen = []
+	func update_ui():
+		seen.append([tool.conforming_mode, tool.wrapping_mode])
+
+
+func test_explicit_placement_and_replay_never_expose_temporary_ui_modes():
+	var original_ui = tool.ui
+	var observer = PlacementModeObserver.new()
+	observer.tool = tool
+	tool.ui = observer
+	tool.conforming_mode = true
+	tool.wrapping_mode = true
+	for method in ["place_shape_marker_plain", "place_shape_conforming", "place_shape_wrapping"]:
+		api.call(method, Vector2.ZERO, 2.0, 45.0, 4)
+		assert_eq_deep(observer.seen.back(), [true, true])
+		last_record.undo()
+		last_record.redo()
+		assert_eq_deep(observer.seen.back(), [true, true])
+	assert_eq(observer.seen.size(), 9, "Placement, undo and redo each refresh UI")
+	tool.ui = original_ui
+	observer.tool = null
+
+
+func test_shape_state_is_narrow_current_and_independent_and_preview_reuses_storage():
+	var state = api.get_shape_state()
+	var full = api.get_tool_state()
+	assert_eq(state.size(), 5)
+	for key in state:
+		assert_eq(state[key], full[key])
+	state.active_shape_angle = 999
+	tool.active_shape_angle = 37.0
+	assert_eq(api.get_shape_state().active_shape_angle, 37.0)
+	var preview = tool._api_preview
+	api.set_shape_preview(Vector2(10, 20), 2, 30, 4, Color.red)
+	assert_eq(preview.pos, Vector2(10, 20))
+	api.set_shape_preview(Vector2(30, 40), 3, 50, 5, Color.blue)
+	assert_eq_deep(preview, {"pos": Vector2(30, 40), "radius": 3.0, "angle": 50.0, "sides": 5, "color": Color.blue})
+	api.clear_shape_preview()
+	assert_true(preview.empty())

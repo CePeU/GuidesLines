@@ -2,11 +2,20 @@
 
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
-from run import DEFAULT_GODOT, ROOT, execute
+from run import DEFAULT_GODOT, ROOT, execute, setup
 
 
 def main():
+    with patch("run.Path.exists", return_value=False), patch("run.subprocess.run") as process:
+        try:
+            setup()
+        except ValueError as error:
+            assert "local upstream GUT" in str(error)
+        else:
+            raise AssertionError("Missing GUT must fail explicitly")
+        process.assert_not_called()
     cache = ROOT / ".cache"
     cache.mkdir(exist_ok=True)
     probes = {

@@ -29,12 +29,7 @@ def git_at(path, *args):
 def setup():
     source = MOD.parents[1] / "ExternalMods/Gut"
     if not source.exists():
-        source.parent.mkdir(exist_ok=True)
-        subprocess.run(
-            ["git", "clone", "--branch", "v7.4.3", "--depth", "1",
-             "https://github.com/bitwes/Gut.git", str(source)],
-            check=True, timeout=120,
-        )
+        raise ValueError("Provide the local upstream GUT v7.4.3 checkout at ExternalMods/Gut")
     if git_at(source, "rev-parse", "HEAD") != GUT_COMMIT:
         raise ValueError("GUT source must be the pinned v7.4.3 commit")
     if git_at(source, "status", "--porcelain", "--", "addons/gut"):

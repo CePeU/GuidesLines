@@ -162,15 +162,11 @@ func Disable():
 
 # Main update loop - manages overlay and drawing
 func Update(_delta):
-	if not is_enabled:
-		# Still ensure overlay exists for API-placed markers
-		if not overlay and cached_worldui:
-			_create_overlay()
-		return
-
-	# Create overlay if needed
+	# API-placed markers also need an overlay while the tool is disabled.
 	if not overlay and cached_worldui:
 		_create_overlay()
+	if not is_enabled:
+		return
 
 	# In Side size mode, keep active_shape_radius in sync with the current hex
 	# edge correction.  This handles the case where the user switches the
@@ -201,7 +197,12 @@ func _create_overlay():
 
 # Helper: record undo/redo action if HistoryApi is available.
 # max_count: maximum number of records kept in history (0 = unlimited)
+var _captured_history = null
+
 func _record_history(record, max_count: int = 100) -> void:
+	if _captured_history != null:
+		_captured_history.append(record)
+		return
 	if parent_mod.Global.API and parent_mod.Global.API.has("HistoryApi"):
 		parent_mod.Global.API.HistoryApi.record(record, max_count)
 
@@ -396,9 +397,10 @@ func _build_shape_descriptor_from_template(pos: Vector2) -> Dictionary:
 		return {}
 	var tmpl_data = templates[active_template_index]["data"]
 	var rot_rad = deg2rad(template_rotation_offset)
-	var data = {"position": pos, "shape_radius": tmpl_data.get("shape_radius", 1.0),
-		"shape_angle": fposmod(tmpl_data.get("shape_angle", 0.0) + template_rotation_offset, 360.0),
-		"shape_sides": tmpl_data.get("shape_sides", DEFAULT_SHAPE_SIDES)}
+	var data = tmpl_data.duplicate()
+	data["position"] = pos
+	if typeof(data.get("shape_angle")) == TYPE_INT or typeof(data.get("shape_angle")) == TYPE_REAL:
+		data["shape_angle"] = fposmod(data.shape_angle + template_rotation_offset, 360.0)
 	if tmpl_data.has("shape_primitives"):
 		# Inject modified primitives translated + rotated to the new position
 		var abs_prims = []
@@ -446,7 +448,7 @@ func _place_template_marker(pos: Vector2) -> void:
 			marker_data["mirror"] = tmpl_data.get("mirror", false)
 		MARKER_TYPE_SHAPE:
 			var eff_angle = fposmod(tmpl_data.get("shape_angle", 0.0) + template_rotation_offset, 360.0)
-			marker_data["shape_radius"] = tmpl_data.get("shape_radius", 1.0)
+			marker_data["shape_radius"] = tmpl_data.get("shape_radius")
 			marker_data["shape_angle"]  = eff_angle
 			marker_data["shape_sides"]  = tmpl_data.get("shape_sides",  DEFAULT_SHAPE_SIDES)
 		MARKER_TYPE_PATH:
@@ -491,13 +493,15 @@ func _place_template_marker(pos: Vector2) -> void:
 # ============================================================================
 
 # Place a marker from the external API (handles history recording internally)
-func api_place_marker(marker_data: Dictionary) -> void:
+func api_place_marker(marker_data: Dictionary, apply_tool_modes: bool = true) -> void:
+	var use_conforming = conforming_mode and apply_tool_modes
+	var use_wrapping = wrapping_mode and apply_tool_modes
 	var clip_snaps = {}
-	if marker_data.get("marker_type") == MARKER_TYPE_SHAPE and conforming_mode:
+	if marker_data.get("marker_type") == MARKER_TYPE_SHAPE and use_conforming:
 		clip_snaps = _snapshot_potential_clip_targets_by_desc(_get_shape_descriptor_from_marker_data(marker_data))
-	_do_place_marker(marker_data)
+	_do_place_marker(marker_data, use_conforming, use_wrapping)
 	next_id += 1
-	_record_history(GuidesLinesHistory.PlaceMarkerRecord.new(self, marker_data, clip_snaps))
+	_record_history(GuidesLinesHistory.PlaceMarkerRecord.new(self, marker_data, clip_snaps, use_conforming, use_wrapping))
 
 ## Bridge: build a shape descriptor from a marker_data Dictionary without
 ## touching the tool's active shape parameters.
@@ -509,9 +513,19 @@ func _get_shape_descriptor_from_marker_data(marker_data: Dictionary) -> Dictiona
 	if marker_data.has("shape_primitives"):
 		points = GeometryUtils.chain_segments_to_polygon(marker_data["shape_primitives"])
 	else:
+		var position = marker_data.get("position")
+		var radius = marker_data.get("shape_radius")
+		var angle = marker_data.get("shape_angle")
+		var sides = marker_data.get("shape_sides")
+		if typeof(position) != TYPE_VECTOR2 or (typeof(radius) != TYPE_INT and typeof(radius) != TYPE_REAL) or (typeof(angle) != TYPE_INT and typeof(angle) != TYPE_REAL) or typeof(sides) != TYPE_INT:
+			if LOGGER: LOGGER.error("GuidesLinesTool: shape descriptor requires position, shape_radius, shape_angle and shape_sides.")
+			return {}
+		if is_nan(position.x) or is_inf(position.x) or is_nan(position.y) or is_inf(position.y) or is_nan(radius) or is_inf(radius) or radius <= 0 or is_nan(angle) or is_inf(angle) or sides < 3:
+			if LOGGER: LOGGER.error("GuidesLinesTool: invalid shape descriptor geometry.")
+			return {}
 		points = GeometryUtils.calculate_polygon_vertices(marker_data["position"],
-			marker_data.get("shape_radius", active_shape_radius) * min(cell_size.x, cell_size.y),
-			marker_data.get("shape_sides", DEFAULT_SHAPE_SIDES), deg2rad(marker_data.get("shape_angle", 0.0)))
+			marker_data["shape_radius"] * min(cell_size.x, cell_size.y),
+			marker_data["shape_sides"], deg2rad(marker_data["shape_angle"]))
 	return {"shape_type": "poly", "points": points} if not points.empty() else {}
 
 ## Bridge: snapshot clip targets using an already-built descriptor instead of
@@ -563,14 +577,8 @@ func api_place_shape_conforming(marker_data: Dictionary) -> Dictionary:
 		return {"marker_id": -1, "affected_markers": []}
 	var new_desc   = _get_shape_descriptor_from_marker_data(marker_data)
 	var clip_snaps = _snapshot_potential_clip_targets_by_desc(new_desc)
-	var prev_conforming = conforming_mode
-	var prev_wrapping = wrapping_mode
-	conforming_mode = true
-	wrapping_mode = false
-	_do_place_marker(marker_data)
+	_do_place_marker(marker_data, true, false)
 	next_id += 1
-	conforming_mode = prev_conforming
-	wrapping_mode = prev_wrapping
 	_record_history(GuidesLinesHistory.PlaceMarkerRecord.new(
 		self, marker_data, clip_snaps, true, false))
 	var affected = []
@@ -614,14 +622,8 @@ func api_place_shape_wrapping(marker_data: Dictionary) -> Dictionary:
 			if not other_desc.empty() and _shapes_overlap(other_desc, tmp_desc):
 				dented_by_ids.append(m.id)
 				affected.append({"marker_id": m.id, "new_polygon": other_desc.points.duplicate()})
-	var prev_wrapping = wrapping_mode
-	var prev_conforming = conforming_mode
-	wrapping_mode = true
-	conforming_mode = false
-	_do_place_marker(marker_data)
+	_do_place_marker(marker_data, false, true)
 	next_id += 1
-	wrapping_mode = prev_wrapping
-	conforming_mode = prev_conforming
 	_record_history(GuidesLinesHistory.PlaceMarkerRecord.new(
 		self, marker_data, {}, false, true))
 	var final_polygon = []
@@ -760,7 +762,11 @@ func _undo_delete_marker(marker_data, index):
 		LOGGER.debug("Marker restored at index %d" % [index])
 
 # Helper functions for HistoryApi - place marker
-func _do_place_marker(marker_data):
+func _do_place_marker(marker_data, use_conforming = null, use_wrapping = null):
+	if use_conforming == null:
+		use_conforming = conforming_mode
+	if use_wrapping == null:
+		use_wrapping = wrapping_mode
 	var marker = GuideMarkerClass.new()
 	marker.set_property("position", marker_data["position"])
 	marker.id = marker_data["id"] 
@@ -790,10 +796,10 @@ func _do_place_marker(marker_data):
 	markers.append(marker)
 	markers_lookup[marker.id] = marker # Add to lookup
 	# Apply conforming dent to existing markers if the feature is enabled
-	if conforming_mode and marker.marker_type == MARKER_TYPE_SHAPE:
+	if use_conforming and marker.marker_type == MARKER_TYPE_SHAPE:
 		_apply_conforming_to_existing_shapes(marker)
 	# Apply wrapping dent to the new marker itself if the feature is enabled
-	if wrapping_mode and marker.marker_type == MARKER_TYPE_SHAPE:
+	if use_wrapping and marker.marker_type == MARKER_TYPE_SHAPE:
 		_apply_wrapping_to_new_shape(marker)
 	update_ui()
 	if overlay:
@@ -1216,11 +1222,11 @@ func _point_in_shape(pt: Vector2, desc: Dictionary) -> bool:
 # marker is still placed normally.
 # The new marker itself keeps its full unclipped outline.
 func _apply_conforming_to_existing_shapes(new_marker):
-	if conforming_mode and new_marker.marker_type == MARKER_TYPE_SHAPE:
+	if new_marker.marker_type == MARKER_TYPE_SHAPE:
 		_subtract_desc_from_markers(_get_shape_descriptor(new_marker, _get_grid_cell_size()), new_marker.id)
 
 func _apply_wrapping_to_new_shape(new_marker):
-	if not wrapping_mode or new_marker.marker_type != MARKER_TYPE_SHAPE:
+	if new_marker.marker_type != MARKER_TYPE_SHAPE:
 		return
 	var cell_size = _get_grid_cell_size()
 	if cell_size == null:

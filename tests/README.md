@@ -33,7 +33,7 @@ python Mods/GuidesLines/tests/check_runtime.py
 
 Setup checks the pinned upstream revision and copies unchanged `addons/gut`,
 including its MIT license, into the ignored `tests/addons/`. It uses
-`ExternalMods/Gut` or clones that release if absent. It rejects a different
+an existing `ExternalMods/Gut` checkout and fails explicitly if it is absent. It rejects a different
 revision or modified addon and never updates an existing checkout or runtime
 dependency pins.
 
@@ -168,3 +168,8 @@ reports out of source control and test files out of runtime distribution archive
 Dungeondraft runtime testing was confirmed successful by the user on 2026-11-04.
 
 See [AUDIT.md](AUDIT.md) for the reviewed findings and remaining work.
+
+Refactoring coverage checks explicit placement policy during UI callbacks and replay,
+shape-only state snapshot independence, and reuse of preview storage. Existing tests
+still exercise preview expiry and repeated draw passes, exact boolean geometry,
+map guards, native history ordering and saved template placement.

@@ -102,7 +102,7 @@ func _process(_delta):
 		if _api_preview_frame != tool._api_preview_frame:
 			_api_preview_frame = tool._api_preview_frame
 		elif Engine.get_idle_frames() > _api_preview_frame:
-			tool._api_preview = {}
+			tool._api_preview.clear()
 		needs_update = true
 
 	# Track drag position for move mode

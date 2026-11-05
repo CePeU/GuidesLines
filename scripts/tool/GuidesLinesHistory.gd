@@ -38,13 +38,7 @@ class PlaceMarkerRecord:
 		if conforming and marker_data["marker_type"] == tool.MARKER_TYPE_SHAPE:
 			clip_snapshots = tool._snapshot_potential_clip_targets_by_desc(
 				tool._get_shape_descriptor_from_marker_data(marker_data))
-		var prev_conforming = tool.conforming_mode
-		var prev_wrapping = tool.wrapping_mode
-		tool.conforming_mode = conforming
-		tool.wrapping_mode = wrapping
-		tool._do_place_marker(marker_data)
-		tool.conforming_mode = prev_conforming
-		tool.wrapping_mode = prev_wrapping
+		tool._do_place_marker(marker_data, conforming, wrapping)
 
 	func undo():
 		if tool.LOGGER:

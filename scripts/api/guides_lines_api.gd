@@ -76,6 +76,27 @@ func _unload():
 # MARKER PLACEMENT
 # ============================================================================
 
+## Capture synchronous GuidesLines edits for a caller-owned compound history action.
+## Returns false if unavailable or already capturing. Do not yield while capturing.
+## Always pair a successful begin with end_history_capture(), even on failure.
+## The caller must either record the returned actions or undo them in reverse order.
+func begin_history_capture() -> bool:
+	if not _has_tool() or _tool()._captured_history != null:
+		if LOGGER: LOGGER.error("GuidesLinesApi: begin_history_capture requires a ready tool and no active capture.")
+		return false
+	_tool()._captured_history = []
+	return true
+
+## Ends capture and returns original history records in execution order.
+## Their undo()/redo() preserve marker IDs and boolean geometry snapshots.
+func end_history_capture() -> Array:
+	if not _has_tool() or _tool()._captured_history == null:
+		if LOGGER: LOGGER.error("GuidesLinesApi: end_history_capture requires an active capture.")
+		return []
+	var records: Array = _tool()._captured_history
+	_tool()._captured_history = null
+	return records
+
 ## Places a Line marker at [position].
 ## Returns the integer id of the created marker, or -1 on failure.
 ## Parameters:
@@ -112,6 +133,15 @@ func place_line_marker(position: Vector2, angle: float = 0.0, mirror: bool = fal
 ##   color    — marker color (default active color)
 func place_shape_marker(position: Vector2, radius: float = 1.0,
 						angle: float = 0.0, sides: int = 6, color = null) -> int:
+	return _place_shape_marker(position, radius, angle, sides, color, true)
+
+## Places a full Shape without inheriting the tool's Conform/Wrap modes.
+## Other markers and the user's mode settings remain unchanged, including on redo.
+func place_shape_marker_plain(position: Vector2, radius: float = 1.0,
+		angle: float = 0.0, sides: int = 6, color = null) -> int:
+	return _place_shape_marker(position, radius, angle, sides, color, false)
+
+func _place_shape_marker(position, radius, angle, sides, color, apply_tool_modes) -> int:
 	if not _has_tool():
 		return -1
 	var tool = _tool()
@@ -125,7 +155,7 @@ func place_shape_marker(position: Vector2, radius: float = 1.0,
 		"shape_angle": angle,
 		"shape_sides": sides,
 	}
-	tool.api_place_marker(marker_data)
+	tool.api_place_marker(marker_data, apply_tool_modes)
 	if LOGGER:
 		LOGGER.debug("API: Shape marker placed id=%d pos=%s sides=%d" % [marker_id, str(position), sides])
 	return marker_id
@@ -216,8 +246,8 @@ func place_arrow_marker(from_pos: Vector2, to_pos: Vector2,
 ##                              during the merge (empty if only one overlap)
 ##   }
 ## Returns {} on internal failure.
-## Returns {"affected_markers":[], "absorbed_marker_ids":[]} when no overlap
-##         or when the virtual shape is identical to the existing marker.
+## Returns {"affected_markers":[], "absorbed_marker_ids":[]} when no overlap.
+## An identical overlap reports the unchanged surviving marker in affected_markers.
 ##
 ## Parameters:
 ##   position — world-space Vector2 centre of the virtual new shape
@@ -869,13 +899,11 @@ func set_shape_preview(coords: Vector2, radius: float = 1.0,
 	var tool = _tool()
 	var c = color if color != null else Color(tool.active_color.r, tool.active_color.g, tool.active_color.b, 0.5)
 	tool._api_preview_frame = Engine.get_idle_frames()
-	tool._api_preview = {
-		"pos":    coords,
-		"radius": radius,
-		"angle":  angle,
-		"sides":  sides,
-		"color":  c,
-	}
+	tool._api_preview["pos"] = coords
+	tool._api_preview["radius"] = radius
+	tool._api_preview["angle"] = angle
+	tool._api_preview["sides"] = sides
+	tool._api_preview["color"] = c
 	if tool.overlay:
 		tool.overlay.update()
 
@@ -885,9 +913,19 @@ func clear_shape_preview() -> void:
 		return
 	var tool = _tool()
 	if not tool._api_preview.empty():
-		tool._api_preview = {}
+		tool._api_preview.clear()
 		if tool.overlay:
 			tool.overlay.update()
+
+## Shape-only snapshot for consumers that poll preview settings every frame.
+## Same keys/units as get_tool_state(); independent copies reflect external edits.
+func get_shape_state() -> Dictionary:
+	if not _has_tool():
+		return {"ready": false}
+	var t = _tool()
+	return {"ready": true, "active_shape_radius": t.active_shape_radius,
+		"active_shape_angle": t.active_shape_angle, "active_shape_sides": t.active_shape_sides,
+		"active_color": t.active_color}
 
 ## Returns a snapshot of the full current tool state as a Dictionary.
 ##
